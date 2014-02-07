@@ -1,0 +1,25 @@
+﻿Build started 2/7/2014 10:47:45 AM.
+     1>Project "c:\Users\griggsmckinley\documents\visual studio 2010\Projects\ListPlus\ListPlus\ListPlus.vcxproj" on node 2 (build target(s)).
+     1>PrepareForBuild:
+         Creating directory "c:\users\griggsmckinley\documents\visual studio 2010\Projects\ListPlus\Debug\".
+       InitializeBuildStatus:
+         Creating "Debug\ListPlus.unsuccessfulbuild" because "AlwaysCreate" was specified.
+       ClCompile:
+         C:\Program Files (x86)\Microsoft Visual Studio 10.0\VC\bin\CL.exe /c /ZI /nologo /W3 /WX- /Od /Oy- /D WIN32 /D _DEBUG /D _CONSOLE /D _UNICODE /D UNICODE /Gm /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Yc"StdAfx.h" /Fp"Debug\ListPlus.pch" /Fo"Debug\\" /Fd"Debug\vc100.pdb" /Gd /TP /analyze- /errorReport:prompt stdafx.cpp
+         stdafx.cpp
+         C:\Program Files (x86)\Microsoft Visual Studio 10.0\VC\bin\CL.exe /c /ZI /nologo /W3 /WX- /Od /Oy- /D WIN32 /D _DEBUG /D _CONSOLE /D _UNICODE /D UNICODE /Gm /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Yu"StdAfx.h" /Fp"Debug\ListPlus.pch" /Fo"Debug\\" /Fd"Debug\vc100.pdb" /Gd /TP /analyze- /errorReport:prompt linkedlist.cpp ListPlus.cpp
+         ListPlus.cpp
+         linkedlist.cpp
+     1>c:\users\griggsmckinley\documents\visual studio 2010\projects\listplus\listplus\linkedlist.cpp(1): warning C4627: '#include "linkedlist.h"': skipped when looking for precompiled header use
+                 Add directive to 'StdAfx.h' or rebuild precompiled header
+     1>c:\users\griggsmckinley\documents\visual studio 2010\projects\listplus\listplus\linkedlist.cpp(2): warning C4627: '#include <iostream>': skipped when looking for precompiled header use
+                 Add directive to 'StdAfx.h' or rebuild precompiled header
+     1>c:\users\griggsmckinley\documents\visual studio 2010\projects\listplus\listplus\linkedlist.cpp(3): warning C4627: '#include <string>': skipped when looking for precompiled header use
+                 Add directive to 'StdAfx.h' or rebuild precompiled header
+     1>c:\users\griggsmckinley\documents\visual studio 2010\projects\listplus\listplus\linkedlist.cpp(65): fatal error C1010: unexpected end of file while looking for precompiled header. Did you forget to add '#include "StdAfx.h"' to your source?
+         Generating Code...
+     1>Done Building Project "c:\Users\griggsmckinley\documents\visual studio 2010\Projects\ListPlus\ListPlus\ListPlus.vcxproj" (build target(s)) -- FAILED.
+
+Build FAILED.
+
+Time Elapsed 00:00:01.45
