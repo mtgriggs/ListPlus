@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reels Studio</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🎬 Reels Studio</div>
+    <div class="brand-sub">Photos → auto-assembled 9:16 reel</div>
+  </header>
+
+  <main class="layout">
+    <!-- Left: controls -->
+    <section class="controls">
+      <div class="panel">
+        <h2>1 · Add photos</h2>
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="fileInput" accept="image/*" multiple hidden />
+          <span>Click or drag photos here</span>
+          <small>JPG / PNG · they stay on your device</small>
+        </label>
+        <ul class="thumbs" id="thumbs"></ul>
+      </div>
+
+      <div class="panel">
+        <h2>2 · Pick a template</h2>
+        <div class="templates" id="templates"></div>
+      </div>
+
+      <div class="panel">
+        <h2>3 · Details</h2>
+        <label class="field">
+          <span>Title (shown on first clip)</span>
+          <input type="text" id="titleInput" placeholder="e.g. Golden hour ✨" maxlength="60" />
+        </label>
+        <label class="field">
+          <span>Handle (shown throughout)</span>
+          <input type="text" id="handleInput" placeholder="@mckinleygphotography" maxlength="40" />
+        </label>
+        <label class="field">
+          <span>Music (optional)</span>
+          <input type="file" id="audioInput" accept="audio/*" />
+        </label>
+      </div>
+
+      <div class="panel">
+        <h2>4 · Export</h2>
+        <button class="btn primary" id="exportBtn">Export reel (.webm)</button>
+        <div class="progress hidden" id="progressWrap">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+        <small class="hint">Export records in real time, so a 20s reel takes ~20s.</small>
+      </div>
+    </section>
+
+    <!-- Right: phone preview -->
+    <section class="preview">
+      <div class="phone">
+        <canvas id="canvas"></canvas>
+      </div>
+      <div class="playbar">
+        <button class="btn" id="playBtn">▶ Play</button>
+        <input type="range" id="scrub" min="0" max="1000" value="0" />
+        <span class="time" id="time">0.0s</span>
+      </div>
+      <audio id="audio" hidden></audio>
+    </section>
+  </main>
+
+  <script src="js/templates.js"></script>
+  <script src="js/reel.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
