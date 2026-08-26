@@ -88,8 +88,19 @@ def segment(
     bodies: list[str],
     gap: float = DEFAULT_BURST_GAP,
     kind: str = "burst",
+    per_body: bool = True,
 ) -> list[Segment]:
-    """Group record indices into time-contiguous segments, per camera body.
+    """Group record indices into time-contiguous segments.
+
+    ``per_body`` controls whether cameras are segmented independently:
+
+    * **Bursts must be per-body.** Two photographers firing at the same instant
+      are not one burst — merging them would create groups of frames that were
+      never alternatives to each other.
+    * **Scenes must not be.** A phase of the day — the ceremony, the reception —
+      is shared by everyone shooting it. Segmenting scenes per body splits every
+      phase into one scene per camera, doubling the count and understating how
+      much was shot during each.
 
     Records without a timestamp cannot be placed and are omitted; the caller
     reports that as timestamp coverage rather than guessing an ordering.
@@ -98,7 +109,7 @@ def segment(
     for i, (epoch, body) in enumerate(zip(epochs, bodies)):
         if epoch is None:
             continue
-        by_body.setdefault(body, []).append((i, epoch))
+        by_body.setdefault(body if per_body else "*", []).append((i, epoch))
 
     segments: list[Segment] = []
     for body in sorted(by_body):

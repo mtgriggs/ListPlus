@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from .scan import ImageRecord
@@ -28,9 +28,88 @@ from .xmp import DEVELOP_FIELDS
 
 
 def _fmt_epoch(epoch: float | None) -> str:
+    """Format as wall-clock time.
+
+    EXIF timestamps are naive local time — what the camera's clock read when the
+    shutter fired — and `exif._parse_dt` converts them with the same local
+    interpretation. Formatting them back as local time round-trips to the clock
+    time McKinley was actually shooting at. Formatting as UTC would shift every
+    displayed time by the machine's offset.
+    """
     if epoch is None:
         return "n/a"
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+    return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M")
+
+
+def _fmt_clock(epoch: float | None) -> str:
+    if epoch is None:
+        return "n/a"
+    return datetime.fromtimestamp(epoch).strftime("%H:%M")
+
+
+def _duration(seconds: float) -> str:
+    minutes = int(round(seconds / 60.0))
+    if minutes < 60:
+        return f"{minutes}m"
+    return f"{minutes // 60}h {minutes % 60:02d}m"
+
+
+def _scene_table(records: list[ImageRecord]) -> list[dict]:
+    """Per-scene rows: when it ran, how much was shot, how much survived.
+
+    Scenes are cut at long gaps between frames, so they approximate the phases
+    of the day — getting ready, ceremony, portraits, reception — without any
+    manual labelling.
+    """
+    scenes: dict[int, list[ImageRecord]] = {}
+    for r in records:
+        if r.scene_id is not None and r.exif.capture_epoch is not None:
+            scenes.setdefault(r.scene_id, []).append(r)
+
+    rows = []
+    for members in scenes.values():
+        epochs = sorted(m.exif.capture_epoch for m in members)
+        kept = sum(1 for m in members if m.delivered)
+        flash = sum(1 for m in members if m.exif.flash_fired)
+        isos = [m.exif.iso for m in members if m.exif.iso]
+        rows.append({
+            "start": epochs[0],
+            "start_clock": _fmt_clock(epochs[0]),
+            "duration": _duration(epochs[-1] - epochs[0]),
+            "frames": len(members),
+            "delivered": kept,
+            "keep_rate": round(kept / len(members), 4),
+            "flash_share": round(flash / len(members), 4),
+            "median_iso": sorted(isos)[len(isos) // 2] if isos else None,
+            "bodies": len({m.exif.body_key for m in members}),
+        })
+    rows.sort(key=lambda r: r["start"])
+    for i, row in enumerate(rows, 1):
+        row["scene"] = i
+    return rows
+
+
+def _hour_table(records: list[ImageRecord]) -> list[dict]:
+    """Frames and keep rate by hour of the shooting day."""
+    buckets: dict[int, list[ImageRecord]] = {}
+    for r in records:
+        if r.exif.capture_epoch is None:
+            continue
+        hour = datetime.fromtimestamp(r.exif.capture_epoch).hour
+        buckets.setdefault(hour, []).append(r)
+
+    rows = []
+    for hour in sorted(buckets):
+        members = buckets[hour]
+        kept = sum(1 for m in members if m.delivered)
+        rows.append({
+            "hour": hour,
+            "label": f"{hour:02d}:00",
+            "frames": len(members),
+            "delivered": kept,
+            "keep_rate": round(kept / len(members), 4),
+        })
+    return rows
 
 
 def analyze(records: list[ImageRecord], meta: dict) -> dict:
@@ -147,6 +226,11 @@ def analyze(records: list[ImageRecord], meta: dict) -> dict:
             "bodies": len({r.exif.body_key for r in with_time}),
             "scene_count": meta.get("scenes", {}).get("count", 0),
             "scene_keep_rate_spread": round(scene_spread, 4),
+            "scenes": _scene_table(records),
+            "hours": _hour_table(records),
+            "frames_per_hour": (
+                round(len(with_time) / span_hours) if span_hours > 0 else 0
+            ),
         },
         "bursts": bursts,
         "duplicate_work": {
@@ -356,11 +440,36 @@ def render_markdown(a: dict, findings: list[dict], meta: dict, title: str) -> st
 
     t = a["timeline"]
     w("## Timeline\n")
-    w(f"- Span: **{t['span_hours']:.1f} h** ({t['first_frame']} → {t['last_frame']} UTC)")
+    w(f"- Span: **{t['span_hours']:.1f} h** ({t['first_frame']} → {t['last_frame']}, camera clock)")
+    w(f"- Shooting rate: **{t['frames_per_hour']:,} frames/hour** averaged across the day")
     w(f"- Camera bodies detected: **{t['bodies']}**")
     w(f"- Scenes (gaps > {meta.get('scene_gap', 420) / 60:.0f} min): **{t['scene_count']}**")
     w(f"- Keep-rate spread across scenes: **{t['scene_keep_rate_spread']:.1%}**")
     w("")
+
+    if t["scenes"]:
+        w("### Scenes\n")
+        w("Cut at gaps in shooting, so these approximate the phases of the day "
+          "without any manual labelling.\n")
+        w("| # | Start | Duration | Bodies | Frames | Delivered | Keep rate | Flash | Median ISO |")
+        w("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        for row in t["scenes"]:
+            iso = f"{row['median_iso']:,}" if row["median_iso"] else "—"
+            w(f"| {row['scene']} | {row['start_clock']} | {row['duration']} | "
+              f"{row['bodies']} | {row['frames']:,} | {row['delivered']:,} | "
+              f"{row['keep_rate']:.1%} | {row['flash_share']:.0%} | {iso} |")
+        w("")
+
+    if t["hours"]:
+        w("### By hour of day\n")
+        peak = max(t["hours"], key=lambda r: r["frames"])
+        w("| Hour | Frames | Delivered | Keep rate | |")
+        w("| --- | --- | --- | --- | --- |")
+        for row in t["hours"]:
+            bar = "█" * max(1, round(20 * row["frames"] / peak["frames"]))
+            w(f"| {row['label']} | {row['frames']:,} | {row['delivered']:,} | "
+              f"{row['keep_rate']:.1%} | `{bar}` |")
+        w("")
 
     b = a["bursts"]
     d = a["duplicate_work"]

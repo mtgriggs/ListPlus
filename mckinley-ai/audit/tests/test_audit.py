@@ -189,6 +189,19 @@ def test_bursts_split_by_body():
     check(all(s.size == 2 for s in segs), "each body should own 2 frames")
 
 
+def test_scenes_span_bodies():
+    """Scenes must merge cameras; bursts must not."""
+    epochs = [0.0, 1.0, 2.0, 3.0]
+    bodies = ["A", "B", "A", "B"]
+
+    bursts = segment(epochs, bodies, gap=2.0, per_body=True)
+    check(len(bursts) == 2, f"bursts stay per-body, got {len(bursts)}")
+
+    scenes = segment(epochs, bodies, gap=420.0, per_body=False)
+    check(len(scenes) == 1, f"one shared phase should be one scene, got {len(scenes)}")
+    check(scenes[0].size == 4, "the scene should contain both shooters' frames")
+
+
 def test_no_timestamps_yields_no_bursts():
     segs = segment([None, None], ["A", "A"], gap=2.0)
     check(segs == [], "frames without timestamps cannot be segmented")
@@ -268,6 +281,30 @@ def test_analysis_and_report(tmp: Path):
     check(a["develop"]["distinct_fingerprints"] > 1, "fixture develop settings should vary")
     check(a["duplicate_work"]["decisive_bursts"] > 0, "fixture should have decisive bursts")
 
+    # Timeline built from capture times.
+    tl = a["timeline"]
+    check(tl["span_hours"] > 5, f"fixture spans a full day; got {tl['span_hours']}h")
+    check(tl["bodies"] == 2, f"expected 2 bodies, got {tl['bodies']}")
+    check(tl["frames_per_hour"] > 0, "shooting rate should be computed")
+
+    scenes = tl["scenes"]
+    check(len(scenes) >= 5, f"expected >=5 scenes, got {len(scenes)}")
+    check([s["scene"] for s in scenes] == list(range(1, len(scenes) + 1)),
+          "scenes should be numbered in chronological order")
+    check(sum(s["frames"] for s in scenes) == len(records),
+          "every timestamped frame should land in exactly one scene")
+    check(sum(s["delivered"] for s in scenes) == sum(r.delivered for r in records),
+          "scene delivered counts should sum to the total")
+    check(all(":" in s["start_clock"] for s in scenes), "scenes need a clock start time")
+    check(any(s["flash_share"] > 0.5 for s in scenes),
+          "the fixture's flash-lit scenes should be visible in the table")
+
+    hours = tl["hours"]
+    check(len(hours) > 1, "frames should span multiple hours")
+    check(sum(h["frames"] for h in hours) == len(records),
+          "hour buckets should account for every frame")
+    check(hours == sorted(hours, key=lambda h: h["hour"]), "hours should be ordered")
+
     findings = verdicts(a)
     check(len(findings) >= 6, f"expected a full finding set, got {len(findings)}")
     titles = " ".join(f["title"] for f in findings)
@@ -284,6 +321,9 @@ def test_analysis_and_report(tmp: Path):
     check("## Verdict" in md, "report needs a verdict section")
     check("Preference pairs" in md, "report needs burst statistics")
     check("Star rating vs delivery" in md, "report needs the rating/delivery table")
+    check("### Scenes" in md, "report needs the per-scene timeline table")
+    check("### By hour of day" in md, "report needs the hour-of-day breakdown")
+    check("frames/hour" in md, "report needs the shooting rate")
 
     csv_text = (out / "inventory.csv").read_text(encoding="utf-8")
     header = csv_text.splitlines()[0]
@@ -458,7 +498,7 @@ def run_all():
         test_xmp_attributes, test_xmp_element_form,
         test_xmp_zero_develop_is_not_an_edit, test_xmp_malformed,
         test_auc, test_entropy,
-        test_burst_segmentation, test_bursts_split_by_body,
+        test_burst_segmentation, test_bursts_split_by_body, test_scenes_span_bodies,
         test_no_timestamps_yields_no_bursts,
         test_normalize_stem,
         test_scan_end_to_end, test_analysis_and_report,

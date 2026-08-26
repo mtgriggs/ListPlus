@@ -122,6 +122,28 @@ perfect. See feasibility study §3.1 for how to act on each range. **A low numbe
 here is not a problem** — it just means the delivered set is doing the work, as
 it should.
 
+### Timeline — when you shot, and what survived
+
+Built entirely from capture timestamps, with no manual labelling:
+
+- **Scenes** — the day cut at gaps of more than 7 minutes, which approximates
+  the phases (getting ready, ceremony, portraits, reception). Each row gives the
+  clock start, duration, how many bodies were shooting, frames, delivered, keep
+  rate, flash share and median ISO. Scenes merge both shooters, because a phase
+  of the day is shared; bursts stay per-body, because two photographers firing at
+  the same instant are not alternatives to each other.
+- **By hour of day** — frames and keep rate per hour, with a bar for shot volume.
+
+What to look for: **does your keep rate move with the phase?** If the ceremony
+runs at 20% and the reception at 8%, a model that ignores context will
+systematically over-deliver one and under-deliver the other. That is what
+`scene_keep_rate_spread` measures, and a large value means scene features are
+not optional.
+
+Flash share and median ISO per scene are there to confirm the segmentation found
+real phases rather than arbitrary gaps — a flash-lit, ISO 3200 block at 19:00 is
+a reception whatever you call it.
+
 ### Burst structure
 
 The two numbers that matter:

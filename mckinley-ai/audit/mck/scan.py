@@ -309,8 +309,10 @@ def scan_wedding(
     epochs = [r.exif.capture_epoch for r in records]
     bodies = [r.exif.body_key for r in records]
 
-    bursts = segment(epochs, bodies, gap=burst_gap, kind="burst")
-    scenes = segment(epochs, bodies, gap=scene_gap, kind="scene")
+    # Bursts are per-body (two shooters are never one burst); scenes are not
+    # (a phase of the day is shared by everyone shooting it).
+    bursts = segment(epochs, bodies, gap=burst_gap, kind="burst", per_body=True)
+    scenes = segment(epochs, bodies, gap=scene_gap, kind="scene", per_body=False)
     for seg in bursts:
         for idx in seg.indices:
             records[idx].burst_id = seg.index
