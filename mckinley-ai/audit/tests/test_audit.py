@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -490,6 +490,318 @@ def test_catalog_inspection(tmp: Path):
     check(not missing["readable"], "a missing catalog should fail cleanly")
 
 
+# --- XMP writing ----------------------------------------------------------
+
+def test_xmp_write_preserves_everything_else(tmp: Path):
+    """The critical safety property: only the rating changes."""
+    from mck.xmpwrite import write_rating
+
+    raw = tmp / "IMG_0001.CR2"
+    raw.write_bytes(b"stub")
+    sidecar = tmp / "IMG_0001.xmp"
+    sidecar.write_text(build_xmp(
+        rating=2, label="Blue", creator="Adobe Lightroom Classic",
+        develop={"Exposure2012": 0.42, "Highlights2012": -35.0}, masks=True,
+    ), encoding="utf-8")
+    before = sidecar.read_text(encoding="utf-8")
+
+    # Dry run must not touch the file.
+    res = write_rating(raw, rating=5, dry_run=True)
+    check(res.action == "updated", f"dry run should report intent, got {res.action}")
+    check(sidecar.read_text(encoding="utf-8") == before, "dry run must not write")
+
+    # No backup dir means refuse.
+    res = write_rating(raw, rating=5, dry_run=False, backup_dir=None)
+    check(res.action == "skipped", "must refuse to modify without a backup dir")
+    check(sidecar.read_text(encoding="utf-8") == before, "refusal must not write")
+
+    backups = tmp / "backups"
+    res = write_rating(raw, rating=5, label="Green", dry_run=False, backup_dir=backups)
+    check(res.action == "updated", f"expected update, got {res.action}: {res.detail}")
+    check((backups / "IMG_0001.xmp").exists(), "original must be backed up")
+    check((backups / "IMG_0001.xmp").read_text(encoding="utf-8") == before,
+          "backup must be byte-identical to the original")
+
+    after = sidecar.read_text(encoding="utf-8")
+    doc = parse_xmp(sidecar)
+    check(doc.rating == 5, f"rating not updated: {doc.rating}")
+    check(doc.label == "Green", f"label not updated: {doc.label}")
+    check(abs((doc.get_float("crs:Exposure2012") or 0) - 0.42) < 1e-6,
+          "develop settings must survive a rating write")
+    check(abs((doc.get_float("crs:Highlights2012") or 0) + 35.0) < 1e-6,
+          "all develop settings must survive")
+    check(doc.mask_count == 1, "local adjustment masks must survive")
+    check("MaskGroupBasedCorrections" in after, "mask block must remain in the file")
+    check(len(after) - len(before) < 40,
+          "a rating write should change a handful of bytes, not rewrite the file")
+
+
+def test_xmp_write_element_form_and_creation(tmp: Path):
+    from mck.xmpwrite import write_rating
+
+    # Element form rather than attribute form.
+    raw = tmp / "IMG_0002.CR2"
+    raw.write_bytes(b"stub")
+    (tmp / "IMG_0002.xmp").write_text(
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+        '<rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/">'
+        "<xmp:Rating>1</xmp:Rating></rdf:Description></rdf:RDF></x:xmpmeta>",
+        encoding="utf-8")
+    res = write_rating(raw, rating=4, dry_run=False, backup_dir=tmp / "b")
+    check(res.action == "updated", f"element form should update, got {res.action}")
+    check(parse_xmp(tmp / "IMG_0002.xmp").rating == 4, "element-form rating not set")
+
+    # No sidecar at all -> create one.
+    raw2 = tmp / "IMG_0003.CR2"
+    raw2.write_bytes(b"stub")
+    res = write_rating(raw2, rating=3, label="Green", dry_run=False, backup_dir=tmp / "b")
+    check(res.action == "created", f"expected creation, got {res.action}")
+    doc = parse_xmp(tmp / "IMG_0003.xmp")
+    check(doc.rating == 3 and doc.label == "Green", "created sidecar has wrong values")
+
+    # Invalid inputs are rejected, not written.
+    check(write_rating(raw2, rating=9, dry_run=False).action == "error",
+          "out-of-range rating must be rejected")
+    check(write_rating(raw2, label="Chartreuse", dry_run=False).action == "error",
+          "unknown colour label must be rejected")
+
+
+# --- culling automator ----------------------------------------------------
+
+def test_cull_automator(tmp: Path):
+    from mck.cullwatch import RATING_KEEP, process_wedding, run_intake
+
+    info = make_wedding(tmp / "intake" / "2025-07-04-jones", seed=71)
+    # The fixture puts frames in raw/; treat the wedding folder as the drop.
+    out = tmp / "cull-out"
+
+    result = process_wedding(
+        raw_root=info["raw"], out_dir=out / "jones",
+        prefer_exiftool=False, snapshot=True, write_xmp=False, log=lambda *_: None,
+    )
+    check(result["status"] == "ok", f"cull should succeed: {result}")
+    check(result["frames"] == info["frames"], "should see every frame")
+    check(result["proposed_keepers"] > 0, "should propose some keepers")
+    check(0.05 < result["proposed_keep_rate"] < 0.5,
+          f"keep rate should be plausible, got {result['proposed_keep_rate']}")
+    check(result["snapshot"] is not None, "must snapshot before proposing")
+    check(result["xmp"]["dry_run"] is True, "must default to not writing sidecars")
+    check((out / "jones" / "proposal.json").exists(), "proposal must be written")
+
+    # Sidecars must be untouched without --write.
+    import json as _json
+    proposal = _json.loads((out / "jones" / "proposal.json").read_text())
+    check(len(proposal) == info["frames"], "proposal covers every frame")
+    check(proposal[0]["proposed_rating"] >= RATING_KEEP,
+          "proposal should be sorted best-first")
+    check(all("capture_time" in row for row in proposal),
+          "proposal rows need capture time")
+
+    # Intake run: skips unsettled folders, then records state.
+    intake_out = tmp / "intake-out"
+    res = run_intake(tmp / "intake", intake_out, settle_seconds=0.0,
+                     prefer_exiftool=False, log=lambda *_: None)
+    check(res["processed"] == 1, f"expected 1 processed, got {res['processed']}")
+    res2 = run_intake(tmp / "intake", intake_out, settle_seconds=0.0,
+                      prefer_exiftool=False, log=lambda *_: None)
+    check(res2["processed"] == 0 and res2["skipped"] == 1,
+          "second run must not reprocess")
+
+
+def test_cull_waits_for_copy_to_finish(tmp: Path):
+    from mck.cullwatch import run_intake
+
+    make_wedding(tmp / "intake2" / "still-copying", seed=73)
+    res = run_intake(tmp / "intake2", tmp / "out2", settle_seconds=9999.0,
+                     prefer_exiftool=False, log=lambda *_: None)
+    check(res["processed"] == 0, "must not process a folder that is still changing")
+    check(res["waiting"] == 1, f"should report it as waiting, got {res}")
+
+
+def test_cull_write_mode_backs_up(tmp: Path):
+    from mck.cullwatch import process_wedding
+
+    info = make_wedding(tmp / "w", seed=77)
+    sidecars = sorted(info["raw"].glob("*.xmp"))
+    check(len(sidecars) > 0, "fixture should have sidecars")
+    original = sidecars[0].read_text(encoding="utf-8")
+
+    result = process_wedding(
+        raw_root=info["raw"], out_dir=tmp / "out", prefer_exiftool=False,
+        write_xmp=True, snapshot=False, log=lambda *_: None,
+    )
+    check(result["xmp"]["dry_run"] is False, "write mode should be active")
+    backup_dir = Path(result["xmp"]["backup_dir"])
+    check(backup_dir.exists(), "backup directory must be created")
+    check((backup_dir / sidecars[0].name).read_text(encoding="utf-8") == original,
+          "backup must preserve the original sidecar exactly")
+    check(not result["xmp"]["errors"], f"no write errors expected: {result['xmp']['errors']}")
+
+
+# --- editorial automator --------------------------------------------------
+
+def _editorial_gallery(tmp: Path, count: int = 90, width: int = 2000,
+                       height: int = 1400) -> Path:
+    """A delivered gallery with real JPEG dimensions and spread capture times."""
+    from make_fixtures import build_jpeg_with_exif, build_tiff_exif
+    from datetime import timedelta as _td
+
+    gallery = tmp / "delivered"
+    gallery.mkdir(parents=True, exist_ok=True)
+    base = datetime(2025, 6, 14, 11, 0, 0)
+    for i in range(count):
+        # Five phases, 40 minutes apart, so scene segmentation finds them.
+        phase, within = divmod(i, count // 5 or 1)
+        shot = base + _td(minutes=phase * 40 + within)
+        tiff = build_tiff_exif(shot, "Canon", "EOS R5", "BODY-A", "RF50mm",
+                               400, 2.0, 1 / 500, 50.0, False)
+        jpeg = build_jpeg_with_exif(tiff)
+        # Append padding after EOI so SOF parsing still works but size varies.
+        (gallery / f"McKinley-{i:04d}.jpg").write_bytes(
+            _sof_jpeg(width, height, jpeg)
+        )
+    return gallery
+
+
+def _sof_jpeg(width: int, height: int, prefix: bytes) -> bytes:
+    """Splice a real SOF0 marker into a fixture JPEG so dimensions are readable."""
+    import struct as _s
+    sof = b"\xff\xc0" + _s.pack(">HBHHB", 17, 8, height, width, 3) + b"\x00" * 9
+    # prefix ends with EOI; insert SOF before it.
+    return prefix[:-2] + sof + prefix[-2:]
+
+
+def test_jpeg_dimensions(tmp: Path):
+    from mck.exif import jpeg_dimensions
+    from make_fixtures import build_jpeg_with_exif, build_tiff_exif
+
+    tiff = build_tiff_exif(datetime(2025, 1, 1, 12, 0, 0), "Canon", "R5", "A", "L",
+                           100, 2.0, 1 / 100, 50.0, False)
+    p = tmp / "x.jpg"
+    p.write_bytes(_sof_jpeg(1600, 1067, build_jpeg_with_exif(tiff)))
+    check(jpeg_dimensions(p) == (1600, 1067), f"got {jpeg_dimensions(p)}")
+
+    bad = tmp / "bad.jpg"
+    bad.write_bytes(b"not a jpeg")
+    check(jpeg_dimensions(bad) is None, "non-JPEG should return None, not raise")
+
+
+def test_editorial_ready(tmp: Path):
+    from mck.editorial import (
+        PROFILES, SubmissionLedger, VENDOR_ROLES, DETAIL_CATEGORIES,
+        evaluate, meta_template, render_submission,
+    )
+
+    gallery = _editorial_gallery(tmp, count=90)
+    ledger = SubmissionLedger(tmp / "submissions.json")
+    meta = meta_template("2025-06-14-smith")
+    meta["vendors"] = {r: f"{r} co" for r in VENDOR_ROLES}
+    meta["details_present"] = {c: True for c in DETAIL_CATEGORIES}
+
+    report = evaluate("2025-06-14-smith", [gallery], PROFILES["style-me-pretty"],
+                      ledger, meta, prefer_exiftool=False)
+
+    check(report["counts"]["delivered"] == 90, f"got {report['counts']['delivered']}")
+    check(report["counts"]["spec_failures"] == 0,
+          f"2000x1400 should pass SMP spec: {report['spec_failures'][:2]}")
+    check(report["ready"], f"should be ready: {report['blockers']}")
+    check(60 <= report["counts"]["selected"] <= 150, "selection within SMP range")
+    check(report["coverage"]["scenes_covered"] >= 5,
+          f"selection should span the day, got {report['coverage']['scenes_covered']}")
+    check(not report["warnings"], f"complete metadata should warn nothing: {report['warnings']}")
+
+    md = render_submission(report)
+    check("Ready to submit" in md, "report should say it is ready")
+    check("Vendor credits" in md and "Coverage" in md, "report needs its sections")
+
+
+def test_editorial_blocks_on_spec_and_count(tmp: Path):
+    from mck.editorial import PROFILES, SubmissionLedger, evaluate, meta_template
+
+    # Too small for the 900px short-edge requirement.
+    gallery = _editorial_gallery(tmp, count=70, width=800, height=600)
+    ledger = SubmissionLedger(tmp / "s.json")
+    report = evaluate("small", [gallery], PROFILES["style-me-pretty"], ledger,
+                      meta_template("small"), prefer_exiftool=False)
+    check(report["counts"]["spec_failures"] == 70, "all frames should fail the spec")
+    check(not report["ready"], "must not be ready")
+    check(any("at least 60" in b for b in report["blockers"]),
+          f"should block on count: {report['blockers']}")
+    check(any("Photography credit" in b for b in report["blockers"]),
+          "missing photographer credit must block")
+
+
+def test_editorial_exclusivity(tmp: Path):
+    from mck.editorial import (
+        PROFILES, SubmissionLedger, VENDOR_ROLES, DETAIL_CATEGORIES,
+        evaluate, meta_template,
+    )
+
+    gallery = _editorial_gallery(tmp, count=90)
+    ledger = SubmissionLedger(tmp / "submissions.json")
+    meta = meta_template("smith")
+    meta["vendors"] = {r: "x" for r in VENDOR_ROLES}
+    meta["details_present"] = {c: True for c in DETAIL_CATEGORIES}
+
+    # Pending elsewhere, inside the response window -> blocked.
+    ledger.record("smith", "junebug", status="pending",
+                  when=datetime.now().date().isoformat(), response_days=28)
+    report = evaluate("smith", [gallery], PROFILES["style-me-pretty"], ledger, meta,
+                      prefer_exiftool=False)
+    check(not report["ready"], "pending elsewhere must block")
+    check(any("exclusivity" in b.lower() for b in report["blockers"]),
+          f"should cite exclusivity: {report['blockers']}")
+
+    # Same submission, now overdue -> warning instead of a block.
+    old = (datetime.now() - timedelta(days=60)).date().isoformat()
+    ledger.data["weddings"]["smith"][0]["submitted"] = old
+    report = evaluate("smith", [gallery], PROFILES["style-me-pretty"], ledger, meta,
+                      prefer_exiftool=False)
+    check(report["ready"], f"an overdue window should unblock: {report['blockers']}")
+    check(any("past their" in w for w in report["warnings"]),
+          f"should warn about the lapsed window: {report['warnings']}")
+
+    # Already published elsewhere -> hard block, permanently.
+    ledger.set_status("smith", "junebug", "published")
+    report = evaluate("smith", [gallery], PROFILES["style-me-pretty"], ledger, meta,
+                      prefer_exiftool=False)
+    check(not report["ready"], "prior publication must block")
+    check(any("published" in b.lower() for b in report["blockers"]),
+          f"should cite prior publication: {report['blockers']}")
+
+
+def test_editorial_cli(tmp: Path):
+    from mck.cli import main
+
+    out = tmp / "editorial"
+    check(main(["editorial", "profiles", "--out", str(out)]) == 0,
+          "profiles should list cleanly")
+    check(main(["editorial", "init", "--wedding", "smith", "--out", str(out)]) == 0,
+          "init should create metadata")
+    check((out / "weddings" / "smith.json").exists(), "metadata file should exist")
+    check(main(["editorial", "init", "--wedding", "smith", "--out", str(out)]) == 2,
+          "init must not silently overwrite")
+
+    gallery = _editorial_gallery(tmp, count=90)
+    code = main(["editorial", "check", "--wedding", "smith",
+                 "--delivered", str(gallery), "--publication", "style-me-pretty",
+                 "--out", str(out), "--no-exiftool"])
+    check(code == 1, "incomplete vendor credits should exit non-zero")
+    check((out / "weddings" / "smith" / "SUBMISSION-style-me-pretty.md").exists(),
+          "submission package should still be written")
+
+    check(main(["editorial", "submit", "--wedding", "smith",
+                "--publication", "junebug", "--out", str(out)]) == 0,
+          "submit should record")
+    check(main(["editorial", "status", "--wedding", "smith", "--publication", "junebug",
+                "--set", "declined", "--out", str(out)]) == 0,
+          "status should update")
+    check(main(["editorial", "status", "--wedding", "smith", "--publication", "nope",
+                "--set", "declined", "--out", str(out)]) == 1,
+          "unknown submission should fail cleanly")
+
+
 # --- runner ---------------------------------------------------------------
 
 def run_all():
@@ -506,6 +818,10 @@ def run_all():
         test_snapshot_diff,
         test_automator, test_automator_survives_a_broken_wedding,
         test_cli, test_catalog_inspection,
+        test_xmp_write_preserves_everything_else, test_xmp_write_element_form_and_creation,
+        test_cull_automator, test_cull_waits_for_copy_to_finish, test_cull_write_mode_backs_up,
+        test_jpeg_dimensions, test_editorial_ready, test_editorial_blocks_on_spec_and_count,
+        test_editorial_exclusivity, test_editorial_cli,
     ]
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)

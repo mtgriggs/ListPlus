@@ -16,6 +16,11 @@ from pathlib import Path
 
 from .automate import RAW_DIR_NAMES, DELIVERED_DIR_NAMES, run_archive, watch
 from .catalog import inspect_catalog
+from .cullwatch import run_intake, watch_intake
+from .editorial import (
+    PROFILES, SubmissionLedger, evaluate, load_wedding_meta, meta_template,
+    render_submission,
+)
 from .report import write_reports
 from .scan import scan_wedding
 from .snapshot import diff_snapshots, take_snapshot
@@ -165,6 +170,138 @@ def cmd_catalog(args) -> int:
     return 0
 
 
+def cmd_cull(args) -> int:
+    intake = Path(args.intake).expanduser()
+    out_dir = Path(args.out).expanduser()
+    if not intake.exists():
+        print(f"error: intake folder not found: {intake}", file=sys.stderr)
+        return 2
+
+    if args.write:
+        print("NOTE: --write will modify XMP sidecars. Existing sidecars are backed up")
+        print(f"      to a timestamped folder under {out_dir} before any change.")
+        print()
+
+    kwargs = dict(
+        settle_seconds=args.settle,
+        keep_rate=args.keep_rate,
+        write_xmp=args.write,
+        prefer_exiftool=not args.no_exiftool,
+    )
+    if args.watch:
+        watch_intake(intake, out_dir, interval=args.interval, **kwargs)
+        return 0
+    run_intake(intake, out_dir, **kwargs)
+    return 0
+
+
+def cmd_editorial(args) -> int:
+    out_dir = Path(args.out).expanduser()
+    ledger = SubmissionLedger(out_dir / "submissions.json")
+
+    if args.action == "profiles":
+        for profile in PROFILES.values():
+            print(f"  {profile.key:<18} {profile.name}")
+            print(f"  {'':<18} {profile.min_images}–{profile.max_images} images"
+                  + (f", min short edge {profile.min_short_edge}px" if profile.min_short_edge else "")
+                  + (f", max {profile.max_file_mb:.0f} MB" if profile.max_file_mb else ""))
+            if profile.source:
+                print(f"  {'':<18} {profile.source}")
+            print()
+        return 0
+
+    if not args.wedding:
+        print("error: --wedding is required", file=sys.stderr)
+        return 2
+
+    meta_path = out_dir / "weddings" / f"{args.wedding}.json"
+
+    if args.action == "init":
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        if meta_path.exists() and not args.force:
+            print(f"error: {meta_path} already exists (use --force to overwrite)",
+                  file=sys.stderr)
+            return 2
+        meta_path.write_text(
+            json.dumps(meta_template(args.wedding), indent=2), encoding="utf-8"
+        )
+        print(f"Created {meta_path}")
+        print("Fill in the vendor credits and tick off the detail categories, then run:")
+        print(f"  python3 -m mck editorial check --wedding {args.wedding} "
+              f"--delivered /path/Delivered")
+        return 0
+
+    if args.action == "status":
+        if not args.publication or not args.set:
+            print("error: status needs --publication and --set", file=sys.stderr)
+            return 2
+        if ledger.set_status(args.wedding, args.publication, args.set):
+            print(f"{args.wedding} @ {args.publication} -> {args.set}")
+            return 0
+        print(f"error: no submission of {args.wedding} to {args.publication} on record",
+              file=sys.stderr)
+        return 1
+
+    profile = PROFILES.get(args.publication or "generic")
+    if profile is None:
+        print(f"error: unknown publication {args.publication!r}. "
+              f"Known: {', '.join(PROFILES)}", file=sys.stderr)
+        return 2
+
+    if args.action == "submit":
+        entry = ledger.record(args.wedding, profile.key, response_days=profile.response_days)
+        print(f"Recorded: {args.wedding} submitted to {profile.name} on {entry['submitted']}.")
+        print(f"Response window: {profile.response_days} days. Exclusivity now applies —"
+              " other outlets will be blocked until this resolves.")
+        return 0
+
+    # action == "check"
+    delivered = _paths(args.delivered)
+    if not delivered:
+        print("error: --delivered is required", file=sys.stderr)
+        return 2
+
+    meta = load_wedding_meta(meta_path)
+    if not meta:
+        print(f"note: no wedding metadata at {meta_path}.")
+        print(f"      Run: python3 -m mck editorial init --wedding {args.wedding}")
+        print()
+
+    report = evaluate(
+        wedding=args.wedding,
+        delivered_roots=delivered,
+        profile=profile,
+        ledger=ledger,
+        meta=meta,
+        prefer_exiftool=not args.no_exiftool,
+    )
+
+    dest = out_dir / "weddings" / args.wedding
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / f"SUBMISSION-{profile.key}.md").write_text(
+        render_submission(report), encoding="utf-8"
+    )
+    (dest / f"submission-{profile.key}.json").write_text(
+        json.dumps(report, indent=2, default=str), encoding="utf-8"
+    )
+
+    c = report["counts"]
+    print(f"{report['wedding']} -> {profile.name}")
+    print(f"  delivered      {c['delivered']:,}")
+    print(f"  meets spec     {c['spec_eligible']:,}")
+    print(f"  selected       {c['selected']:,} "
+          f"(needs {profile.min_images}–{profile.max_images})")
+    print()
+    for b in report["blockers"]:
+        print(f"  [BLOCKER] {b}")
+    for warn in report["warnings"]:
+        print(f"  [WARN] {warn}")
+    print()
+    print(f"{'READY' if report['ready'] else 'NOT READY'} — "
+          f"{dest / f'SUBMISSION-{profile.key}.md'}")
+    return 0 if report["ready"] else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mck",
@@ -219,6 +356,35 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--lrcat", required=True)
     c.add_argument("--json", action="store_true")
     c.set_defaults(func=cmd_catalog)
+
+    k = sub.add_parser("cull", help="automator: pre-cull weddings dropped into an intake folder")
+    k.add_argument("--intake", required=True, help="folder that card dumps land in")
+    k.add_argument("--out", default="./cull-out", help="output directory")
+    k.add_argument("--watch", action="store_true", help="keep running and pick up new drops")
+    k.add_argument("--interval", type=int, default=120, help="watch poll seconds")
+    k.add_argument("--settle", type=float, default=120.0,
+                   help="seconds a folder must be quiet before it counts as finished copying")
+    k.add_argument("--keep-rate", type=float, default=0.18,
+                   help="target share of frames to propose keeping (default 0.18)")
+    k.add_argument("--write", action="store_true",
+                   help="write proposed ratings into XMP sidecars (backs up first). "
+                        "Without this, only a proposal file is produced.")
+    k.add_argument("--no-exiftool", action="store_true")
+    k.set_defaults(func=cmd_cull)
+
+    e = sub.add_parser("editorial", help="automator: prepare and track editorial submissions")
+    e.add_argument("action", choices=["check", "init", "submit", "status", "profiles"],
+                   help="check = build a submission package; init = create wedding metadata; "
+                        "submit = record a submission; status = update an outcome; "
+                        "profiles = list known publications")
+    e.add_argument("--wedding", help="wedding identifier, e.g. 2025-06-14-smith")
+    e.add_argument("--delivered", action="append", help="delivered gallery folder (repeatable)")
+    e.add_argument("--publication", help=f"one of: {', '.join(PROFILES)}")
+    e.add_argument("--out", default="./editorial", help="output directory")
+    e.add_argument("--set", help="status value: pending, published, declined, withdrawn")
+    e.add_argument("--force", action="store_true", help="overwrite existing wedding metadata")
+    e.add_argument("--no-exiftool", action="store_true")
+    e.set_defaults(func=cmd_editorial)
 
     return p
 

@@ -19,6 +19,8 @@ built, and none should be until the numbers in the audit say it is worth it.
    and four explicit kill criteria. Written to be argued with.
 2. **[Data audit runbook](docs/01-data-audit-runbook.md)** — step-by-step
    procedure for auditing one wedding, then the whole archive.
+3. **[The two automators](docs/02-automators.md)** — the culling intake watcher
+   and the editorial submission checker, and why they are different problems.
 
 The three things worth knowing before reading either:
 
@@ -60,6 +62,27 @@ python3 -m mck diff --before ./snapshots/...post-ai \
 python3 -m mck catalog --lrcat /path/Catalog.lrcat
 ```
 
+### The two automators
+
+```bash
+# Culling: watch an intake folder, pre-cull each wedding as it lands.
+# Snapshots sidecars before proposing. Writes nothing without --write.
+python3 -m mck cull --intake /Volumes/Intake --out ./cull-out --watch
+
+# Editorial: prepare and track publication submissions.
+python3 -m mck editorial profiles
+python3 -m mck editorial init  --wedding 2025-06-14-smith
+python3 -m mck editorial check --wedding 2025-06-14-smith \
+    --delivered /path/Delivered --publication style-me-pretty
+python3 -m mck editorial submit --wedding 2025-06-14-smith --publication style-me-pretty
+```
+
+The cull automator is workflow scaffolding waiting on the Phase 2 model — its
+current scorer is a documented baseline, not a taste model. Adopt it anyway for
+the snapshot step. The editorial automator is useful today, because what gets
+submissions rejected is exclusivity, resolution and vendor credits, none of
+which need a model. See [docs/02-automators.md](docs/02-automators.md).
+
 ### What the audit measures
 
 | Output | Question it answers |
@@ -95,11 +118,14 @@ mckinley-ai/
     │   ├── report.py      analysis, findings, report rendering
     │   ├── snapshot.py    sidecar snapshots and disagreement diffs
     │   ├── catalog.py     Lightroom .lrcat introspection
-    │   ├── automate.py    archive-wide automator, ledger, roll-up
+    │   ├── automate.py    archive-wide audit automator, ledger, roll-up
+    │   ├── cullwatch.py   culling automator: intake watcher and pre-cull
+    │   ├── editorial.py   editorial automator: specs, coverage, exclusivity
+    │   ├── xmpwrite.py    safe, backup-first sidecar writing
     │   └── cli.py         command-line interface
     └── tests/
         ├── make_fixtures.py   synthetic wedding generator
-        └── test_audit.py      21 tests
+        └── test_audit.py      32 tests
 ```
 
 ```bash

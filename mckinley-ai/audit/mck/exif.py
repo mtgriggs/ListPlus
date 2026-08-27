@@ -389,6 +389,47 @@ def read_exif_builtin(path: Path, head_bytes: int = 1024 * 512) -> ExifRecord:
     return rec
 
 
+def jpeg_dimensions(path: Path) -> tuple[int, int] | None:
+    """True pixel dimensions of a JPEG, from its SOF marker.
+
+    Read from the frame header rather than EXIF: an export pipeline can resize
+    the image and leave stale PixelXDimension tags behind, and publication
+    specs are about the actual pixels.
+    """
+    try:
+        with path.open("rb") as fh:
+            if fh.read(2) != b"\xff\xd8":
+                return None
+            while True:
+                byte = fh.read(1)
+                if not byte:
+                    return None
+                if byte != b"\xff":
+                    continue
+                marker = fh.read(1)
+                while marker == b"\xff":       # fill bytes
+                    marker = fh.read(1)
+                if not marker:
+                    return None
+                code = marker[0]
+                if code in (0xD8, 0x01) or 0xD0 <= code <= 0xD7:
+                    continue
+                length_bytes = fh.read(2)
+                if len(length_bytes) < 2:
+                    return None
+                (length,) = struct.unpack(">H", length_bytes)
+                # SOF0-SOF15, excluding DHT(C4), JPGA(C8) and DAC(CC).
+                if 0xC0 <= code <= 0xCF and code not in (0xC4, 0xC8, 0xCC):
+                    payload = fh.read(5)
+                    if len(payload) < 5:
+                        return None
+                    height, width = struct.unpack(">HH", payload[1:5])
+                    return width, height
+                fh.seek(length - 2, 1)
+    except (OSError, struct.error):
+        return None
+
+
 def read_exif_many(paths: list[Path], prefer_exiftool: bool = True) -> dict[Path, ExifRecord]:
     """Read metadata for many files, using the best available backend."""
     if prefer_exiftool and exiftool_available():
