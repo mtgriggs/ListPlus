@@ -1,0 +1,16 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Audit and automator output — these contain paths and metadata from real
+# client work and must never reach the remote.
+audit-out/
+cull-out/
+snapshots/
+editorial/
+disagreements/
+*.lrcat
+inventory.csv
+AUDIT_REPORT.md
+ROLLUP.md
