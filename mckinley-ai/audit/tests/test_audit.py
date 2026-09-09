@@ -802,6 +802,52 @@ def test_editorial_cli(tmp: Path):
           "unknown submission should fail cleanly")
 
 
+def test_discover_survey(tmp: Path):
+    """The survey must explain a zero-match archive, not just report zero."""
+    from mck.automate import render_survey, survey_archive
+
+    archive = tmp / "TheBeast"
+    # One folder using conventional names, one using McKinley-ish naming.
+    make_wedding(archive / "2025-06-14 Smith", seed=91)
+    odd = archive / "2025-08-02 Jones"
+    (odd / "CR3 Files").mkdir(parents=True)
+    (odd / "Client Gallery").mkdir(parents=True)
+    (odd / "CR3 Files" / "IMG_1.CR2").write_bytes(b"x")
+    (odd / "Client Gallery" / "IMG_1.jpg").write_bytes(b"x")
+
+    s = survey_archive(archive)
+    check(s["exists"], "archive should be found")
+    check(s["matched"] == 1, f"one folder uses known names, got {s['matched']}")
+    check(s["unmatched"] == 1, f"one folder should be skipped, got {s['unmatched']}")
+
+    names = {c["name"]: c for c in s["candidates"]}
+    check(names["2025-08-02 Jones"]["would_match"] is False, "odd naming should not match")
+    check("cr3 files" in s["subfolder_names"], "unmatched names should be surfaced")
+    check(names["2025-08-02 Jones"]["raw_files_seen"] == 1, "should count raw files")
+    check(names["2025-08-02 Jones"]["jpeg_files_seen"] == 1, "should count jpegs")
+
+    text = render_survey(s)
+    check("SKIP" in text and "OK" in text, "survey should mark both outcomes")
+    check("--raw-names" in text, "survey should suggest the fix when something is skipped")
+
+    # Feeding the real names back in should make it match.
+    s2 = survey_archive(archive, raw_names=["cr3 files"], delivered_names=["client gallery"])
+    check(s2["matched"] == 1, f"custom names should match the odd folder, got {s2['matched']}")
+
+    missing = survey_archive(tmp / "nope")
+    check(not missing["exists"], "missing archive should report cleanly")
+    check("not found" in render_survey(missing), "should say so")
+
+
+def test_discover_cli(tmp: Path):
+    from mck.cli import main
+
+    archive = tmp / "arch"
+    make_wedding(archive / "2025-06-14 Smith", seed=93)
+    check(main(["discover", "--archive", str(archive)]) == 0, "discover should exit 0 on a match")
+    check(main(["discover", "--archive", str(tmp / "nope")]) == 2, "missing archive exits 2")
+
+
 # --- runner ---------------------------------------------------------------
 
 def run_all():
@@ -822,6 +868,7 @@ def run_all():
         test_cull_automator, test_cull_waits_for_copy_to_finish, test_cull_write_mode_backs_up,
         test_jpeg_dimensions, test_editorial_ready, test_editorial_blocks_on_spec_and_count,
         test_editorial_exclusivity, test_editorial_cli,
+        test_discover_survey, test_discover_cli,
     ]
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)

@@ -14,7 +14,9 @@ import json
 import sys
 from pathlib import Path
 
-from .automate import RAW_DIR_NAMES, DELIVERED_DIR_NAMES, run_archive, watch
+from .automate import (
+    RAW_DIR_NAMES, DELIVERED_DIR_NAMES, render_survey, run_archive, survey_archive, watch,
+)
 from .catalog import inspect_catalog
 from .cullwatch import run_intake, watch_intake
 from .editorial import (
@@ -75,6 +77,23 @@ def cmd_scan(args) -> int:
     print()
     print(f"Report: {out_dir / 'AUDIT_REPORT.md'}")
     return 0
+
+
+def cmd_discover(args) -> int:
+    archive = Path(args.archive).expanduser()
+    survey = survey_archive(
+        archive,
+        raw_names=args.raw_names.split(",") if args.raw_names else None,
+        delivered_names=args.delivered_names.split(",") if args.delivered_names else None,
+        limit=args.limit,
+    )
+    if args.json:
+        print(json.dumps(survey, indent=2, default=str))
+        return 0 if survey["exists"] else 2
+    print(render_survey(survey))
+    if not survey["exists"]:
+        return 2
+    return 0 if survey["matched"] else 1
 
 
 def cmd_auto(args) -> int:
@@ -338,6 +357,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"comma-separated delivered folder names (default: {','.join(DELIVERED_DIR_NAMES)})")
     a.add_argument("--no-exiftool", action="store_true")
     a.set_defaults(func=cmd_auto)
+
+    d2 = sub.add_parser("discover",
+                        help="report what an archive contains before auditing it")
+    d2.add_argument("--archive", required=True)
+    d2.add_argument("--raw-names")
+    d2.add_argument("--delivered-names")
+    d2.add_argument("--limit", type=int, help="only inspect the first N folders")
+    d2.add_argument("--json", action="store_true")
+    d2.set_defaults(func=cmd_discover)
 
     n = sub.add_parser("snapshot", help="freeze current sidecar state")
     n.add_argument("--raw", action="append", required=True, help="folder to snapshot (repeatable)")

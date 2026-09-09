@@ -24,6 +24,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from .exif import JPEG_EXTS, RAW_EXTS
 from .report import write_reports
 from .scan import scan_wedding
 
@@ -87,6 +88,132 @@ def discover_weddings(
             "delivered": delivered_dirs,
         })
     return weddings
+
+
+def survey_archive(
+    archive: Path,
+    raw_names: list[str] | None = None,
+    delivered_names: list[str] | None = None,
+    limit: int | None = None,
+) -> dict:
+    """Report what an archive root actually contains, before auditing anything.
+
+    ``discover_weddings`` only returns folders whose subdirectories match the
+    known naming conventions. On a real archive those conventions are whatever
+    the photographer settled on years ago, so a silent zero-match is the likely
+    first result. This reports every child folder, what is inside it, and
+    whether it would be picked up, so the naming can be corrected in one pass
+    instead of by guessing.
+    """
+    raw_names = raw_names or RAW_DIR_NAMES
+    delivered_names = delivered_names or DELIVERED_DIR_NAMES
+
+    result: dict = {
+        "archive": str(archive),
+        "exists": archive.exists(),
+        "candidates": [],
+        "subfolder_names": {},
+        "matched": 0,
+        "unmatched": 0,
+    }
+    if not archive.exists():
+        return result
+
+    name_counts: dict[str, int] = {}
+    children = [c for c in sorted(archive.iterdir())
+                if c.is_dir() and not c.name.startswith(".")]
+    if limit:
+        children = children[:limit]
+
+    for child in children:
+        subdirs = []
+        try:
+            subdirs = sorted(d.name for d in child.iterdir()
+                             if d.is_dir() and not d.name.startswith("."))
+        except OSError:
+            pass
+        for name in subdirs:
+            name_counts[name.lower()] = name_counts.get(name.lower(), 0) + 1
+
+        raw_hits = [n for n in subdirs if n.lower() in raw_names]
+        del_hits = [n for n in subdirs if n.lower() in delivered_names]
+
+        # Count image files shallowly: a full recursive walk over a multi-
+        # terabyte drive is not worth it just to describe the layout.
+        raw_count = jpeg_count = 0
+        for probe in [child] + [child / s for s in subdirs]:
+            try:
+                for entry in probe.iterdir():
+                    if not entry.is_file():
+                        continue
+                    ext = entry.suffix.lower()
+                    if ext in RAW_EXTS:
+                        raw_count += 1
+                    elif ext in JPEG_EXTS:
+                        jpeg_count += 1
+            except OSError:
+                pass
+
+        would_match = bool(raw_hits or del_hits)
+        result["candidates"].append({
+            "name": child.name,
+            "subfolders": subdirs[:12],
+            "raw_folders": raw_hits,
+            "delivered_folders": del_hits,
+            "raw_files_seen": raw_count,
+            "jpeg_files_seen": jpeg_count,
+            "would_match": would_match,
+        })
+        result["matched" if would_match else "unmatched"] += 1
+
+    result["subfolder_names"] = dict(
+        sorted(name_counts.items(), key=lambda kv: -kv[1])[:30]
+    )
+    return result
+
+
+def render_survey(s: dict) -> str:
+    """Console-friendly summary of a survey, with the fix if nothing matched."""
+    lines: list[str] = []
+    w = lines.append
+
+    if not s["exists"]:
+        return f"Archive not found: {s['archive']}"
+
+    total = s["matched"] + s["unmatched"]
+    w(f"{s['archive']}")
+    w(f"  {total} folder(s), {s['matched']} would be audited, {s['unmatched']} would be skipped")
+    w("")
+
+    for c in s["candidates"][:40]:
+        mark = "OK  " if c["would_match"] else "SKIP"
+        w(f"  [{mark}] {c['name']}")
+        if c["subfolders"]:
+            w(f"         subfolders: {', '.join(c['subfolders'])}")
+        else:
+            w("         (no subfolders)")
+        bits = []
+        if c["raw_folders"]:
+            bits.append(f"raw={','.join(c['raw_folders'])}")
+        if c["delivered_folders"]:
+            bits.append(f"delivered={','.join(c['delivered_folders'])}")
+        if bits:
+            w(f"         matched: {'; '.join(bits)}")
+        w(f"         files seen: {c['raw_files_seen']} raw, {c['jpeg_files_seen']} jpeg")
+    if len(s["candidates"]) > 40:
+        w(f"  ... and {len(s['candidates']) - 40} more")
+    w("")
+
+    if s["unmatched"]:
+        w("  Most common subfolder names across this archive:")
+        for name, count in list(s["subfolder_names"].items())[:15]:
+            w(f"    {name:<28} {count:>4}")
+        w("")
+        w("  If your raw/delivered folders are named differently, pass them through:")
+        w("    python3 -m mck auto --archive ... \\")
+        w("        --raw-names 'raw,originals,your-name-here' \\")
+        w("        --delivered-names 'delivered,final,your-name-here'")
+    return "\n".join(lines)
 
 
 def _fingerprint(wedding: dict) -> str:

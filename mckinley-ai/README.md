@@ -14,6 +14,8 @@ built, and none should be until the numbers in the audit say it is worth it.
 
 ## Start here
 
+0. **[Quickstart](docs/03-quickstart.md)** — copy-paste commands for running the
+   audit on the archive drives. Start here if you just want to run it.
 1. **[Feasibility study](docs/00-feasibility-study.md)** — what is realistic,
    what is not, what the data can and cannot support, hardware, cost, licensing,
    and four explicit kill criteria. Written to be argued with.
@@ -44,6 +46,9 @@ recommended, not required.
 
 ```bash
 cd audit
+
+# See what an archive drive actually contains, and whether it will be matched
+python3 -m mck discover --archive "/Volumes/The Beast"
 
 # Audit one wedding
 python3 -m mck scan --raw /path/RAW --delivered /path/Delivered --out ./out
@@ -125,7 +130,7 @@ mckinley-ai/
     │   └── cli.py         command-line interface
     └── tests/
         ├── make_fixtures.py   synthetic wedding generator
-        └── test_audit.py      32 tests
+        └── test_audit.py      34 tests
 ```
 
 ```bash
