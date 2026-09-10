@@ -26,9 +26,11 @@ built, and none should be until the numbers in the audit say it is worth it.
 
 The three things worth knowing before reading either:
 
-- **The training label is the delivered gallery**, not star ratings and not
-  anything from Aftershoot. It already exists for every wedding you have shot,
-  and it removes most of the licensing question along the way.
+- **The training label is which frames you actually delivered**, not star
+  ratings and not anything from Aftershoot. Since the galleries live in Pic-Time
+  rather than on disk, it is read from the Lightroom catalogs, which hold pick
+  flags, collection membership and publish records. `mck catalog` reports which
+  of those your catalogs actually contain.
 - **The "where I disagreed with the AI" data is not recoverable retroactively.**
   An XMP sidecar holds one state; your correction overwrote the suggestion. It
   is cheap to capture going forward, and that is the one thing worth starting
@@ -63,8 +65,12 @@ python3 -m mck diff --before ./snapshots/...post-ai \
                     --after  ./snapshots/...post-review \
                     --out    ./disagreements.jsonl
 
-# Read decisions out of a Lightroom catalog (close Lightroom first)
+# Find the keep/drop label in a Lightroom catalog (close Lightroom first)
 python3 -m mck catalog --lrcat /path/Catalog.lrcat
+python3 -m mck catalog --lrcat /path/Catalog.lrcat \
+    --folder-filter "2025-06-14 Smith" --extract ./labels.csv
+python3 -m mck scan --raw /path/RAW --labels ./labels.csv --label-source published \
+    --out ./out
 ```
 
 ### The two automators
@@ -130,7 +136,7 @@ mckinley-ai/
     │   └── cli.py         command-line interface
     └── tests/
         ├── make_fixtures.py   synthetic wedding generator
-        └── test_audit.py      34 tests
+        └── test_audit.py      37 tests
 ```
 
 ```bash

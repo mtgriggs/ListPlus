@@ -178,6 +178,30 @@ def locate_sidecar(raw_path: Path) -> Path | None:
     return None
 
 
+def join_by_stems(records: list[ImageRecord], stems: set[str]) -> dict:
+    """Mark records whose filename stem appears in a catalog-derived label set.
+
+    Used when the delivered gallery does not exist on disk. The catalog records
+    decisions against the source frame, so the join is by stem and needs no
+    exported JPEG to exist anywhere.
+    """
+    matched = 0
+    for rec in records:
+        if normalize_stem(rec.stem) in stems:
+            rec.delivered = True
+            rec.match_method = "catalog"
+            matched += 1
+    return {
+        "delivered_files": len(stems),
+        "matched_by_stem": 0,
+        "matched_by_time": 0,
+        "matched_by_catalog": matched,
+        "unmatched": max(0, len(stems) - matched),
+        "ambiguous_time": 0,
+        "unmatched_examples": [],
+    }
+
+
 def join_delivered(
     records: list[ImageRecord],
     delivered_paths: list[Path],
@@ -266,6 +290,7 @@ def scan_wedding(
     scene_gap: float = DEFAULT_SCENE_GAP,
     prefer_exiftool: bool = True,
     limit: int | None = None,
+    label_stems: set[str] | None = None,
 ) -> tuple[list[ImageRecord], dict]:
     """Build the full record set for one wedding, plus scan metadata."""
     raw_paths = find_files(raw_roots, RAW_EXTS | JPEG_EXTS)
@@ -297,14 +322,17 @@ def scan_wedding(
                 rec.xmp_mtime = None
         records.append(rec)
 
-    delivered_paths = find_files(delivered_roots, JPEG_EXTS) if delivered_roots else []
-    delivered_exif: dict[Path, ExifRecord] = {}
-    if delivered_paths:
-        # Only the ones that fail a stem match need EXIF, but reading all of
-        # them in one batch is cheaper than deciding twice.
-        delivered_exif = read_exif_many(delivered_paths, prefer_exiftool=prefer_exiftool)
-
-    join_stats = join_delivered(records, delivered_paths, delivered_exif)
+    if label_stems is not None:
+        # Catalog-derived label: no exported JPEGs need exist on disk.
+        join_stats = join_by_stems(records, label_stems)
+    else:
+        delivered_paths = find_files(delivered_roots, JPEG_EXTS) if delivered_roots else []
+        delivered_exif: dict[Path, ExifRecord] = {}
+        if delivered_paths:
+            # Only the ones that fail a stem match need EXIF, but reading all of
+            # them in one batch is cheaper than deciding twice.
+            delivered_exif = read_exif_many(delivered_paths, prefer_exiftool=prefer_exiftool)
+        join_stats = join_delivered(records, delivered_paths, delivered_exif)
 
     epochs = [r.exif.capture_epoch for r in records]
     bodies = [r.exif.body_key for r in records]

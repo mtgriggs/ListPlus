@@ -17,7 +17,10 @@ from pathlib import Path
 from .automate import (
     RAW_DIR_NAMES, DELIVERED_DIR_NAMES, render_survey, run_archive, survey_archive, watch,
 )
-from .catalog import inspect_catalog
+from .catalog import (
+    delivered_stems, extract_images, inspect_catalog, open_catalog,
+    read_extract, render_catalog_report, write_extract,
+)
 from .cullwatch import run_intake, watch_intake
 from .editorial import (
     PROFILES, SubmissionLedger, evaluate, load_wedding_meta, meta_template,
@@ -44,12 +47,38 @@ def cmd_scan(args) -> int:
         print("error: --raw is required", file=sys.stderr)
         return 2
 
+    label_stems = None
+    if args.labels:
+        labels_path = Path(args.labels).expanduser()
+        if not labels_path.exists():
+            print(f"error: labels file not found: {labels_path}", file=sys.stderr)
+            return 2
+        rows = read_extract(labels_path)
+        label_stems = delivered_stems(
+            rows, args.label_source, threshold=args.rating_threshold,
+            collection=args.collection,
+        )
+        if not label_stems:
+            print(f"error: --label-source {args.label_source} selected 0 images from "
+                  f"{len(rows):,} catalog rows.", file=sys.stderr)
+            print("       Run `mck catalog --lrcat ...` to see which label sources "
+                  "this catalog actually has.", file=sys.stderr)
+            return 2
+        print(f"Label source '{args.label_source}': {len(label_stems):,} images "
+              f"marked as delivered by the catalog.")
+    elif not delivered_roots:
+        print("error: give either --delivered (a gallery folder) or --labels "
+              "(a catalog extract). Without one there is no keep/drop label.",
+              file=sys.stderr)
+        return 2
+
     title = args.title or raw_roots[0].parent.name or raw_roots[0].name
     print(f"Scanning {title} ...")
 
     records, meta = scan_wedding(
         raw_roots=raw_roots,
         delivered_roots=delivered_roots,
+        label_stems=label_stems,
         burst_gap=args.burst_gap,
         scene_gap=args.scene_gap,
         prefer_exiftool=not args.no_exiftool,
@@ -158,7 +187,33 @@ def cmd_diff(args) -> int:
 
 
 def cmd_catalog(args) -> int:
-    result = inspect_catalog(Path(args.lrcat).expanduser())
+    lrcat = Path(args.lrcat).expanduser()
+    if not lrcat.exists():
+        print(f"error: catalog not found: {lrcat}", file=sys.stderr)
+        return 2
+
+    if args.extract:
+        try:
+            with open_catalog(lrcat) as conn:
+                rows = extract_images(conn, folder_filter=args.folder_filter,
+                                      collection_filter=args.collection)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: could not read catalog: {exc}", file=sys.stderr)
+            print("Make sure Lightroom is closed.", file=sys.stderr)
+            return 1
+        out_path = Path(args.extract).expanduser()
+        write_extract(rows, out_path)
+        print(f"Extracted {len(rows):,} image rows -> {out_path}")
+        if rows:
+            published = sum(1 for r in rows if r["published"])
+            picked = sum(1 for r in rows if (r["pick"] or 0) > 0)
+            rated = sum(1 for r in rows if (r["rating"] or 0) >= 3)
+            coloured = sum(1 for r in rows if r["color_label"])
+            print(f"  published {published:,} | picked {picked:,} | "
+                  f"3+ stars {rated:,} | colour-labelled {coloured:,}")
+        return 0
+
+    result = inspect_catalog(lrcat, folder_filter=args.folder_filter)
     if args.json:
         print(json.dumps(result, indent=2, default=str))
         return 0 if result.get("readable") else 1
@@ -169,23 +224,7 @@ def cmd_catalog(args) -> int:
               file=sys.stderr)
         return 1
 
-    print(f"Catalog: {result['catalog']}")
-    print(f"Tables:  {result['table_count']}")
-    print()
-    for table, info in result["tables"].items():
-        if info.get("present"):
-            rows = info.get("rows")
-            print(f"  {table:<45} {rows if rows is not None else '?':>12} rows")
-        else:
-            print(f"  {table:<45} {'absent':>12}")
-    for key in ("pick_distribution", "rating_distribution", "color_label_distribution"):
-        if key in result:
-            print()
-            print(f"  {key.replace('_', ' ')}: {result[key]}")
-    if result["findings"]:
-        print()
-        for finding in result["findings"]:
-            print(f"  * {finding}")
+    print(render_catalog_report(result))
     return 0
 
 
@@ -342,6 +381,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--limit", type=int, help="only process the first N frames")
     s.add_argument("--no-exiftool", action="store_true",
                    help="force the built-in EXIF reader")
+    s.add_argument("--labels", help="CSV from `mck catalog --extract`, used as the "
+                                    "keep/drop label when no delivered folder exists")
+    s.add_argument("--label-source", default="published",
+                   choices=["published", "pick", "color", "rating", "collection"],
+                   help="which catalog signal counts as delivered (default: published)")
+    s.add_argument("--rating-threshold", type=int, default=3,
+                   help="minimum stars when --label-source rating (default 3)")
+    s.add_argument("--collection", help="collection name when --label-source collection")
     s.set_defaults(func=cmd_scan)
 
     a = sub.add_parser("auto", help="audit every wedding under an archive root")
@@ -380,8 +427,12 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--out", help="output .json or .jsonl")
     d.set_defaults(func=cmd_diff)
 
-    c = sub.add_parser("catalog", help="inspect a Lightroom .lrcat")
-    c.add_argument("--lrcat", required=True)
+    c = sub.add_parser("catalog", help="inspect a Lightroom .lrcat and extract labels")
+    c.add_argument("--lrcat", required=True, help="path to the .lrcat (close Lightroom first)")
+    c.add_argument("--extract", help="write a per-image CSV to this path instead of a report")
+    c.add_argument("--folder-filter", help="case-insensitive substring of the folder path, "
+                                           "to isolate one wedding inside a large catalog")
+    c.add_argument("--collection", help="case-insensitive collection name filter")
     c.add_argument("--json", action="store_true")
     c.set_defaults(func=cmd_catalog)
 

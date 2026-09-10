@@ -274,8 +274,20 @@ def verdicts(a: dict) -> list[dict]:
 
     # 2. Join quality
     j = a["join"]
-    matched = j.get("matched_by_stem", 0) + j.get("matched_by_time", 0)
-    if j.get("delivered_files"):
+    matched = (j.get("matched_by_stem", 0) + j.get("matched_by_time", 0)
+               + j.get("matched_by_catalog", 0))
+    if j.get("matched_by_catalog"):
+        rate = matched / j["delivered_files"] if j.get("delivered_files") else 0.0
+        if rate < 0.85:
+            add("WARN", f"Catalog label matched only {rate:.0%} of its images to files on disk",
+                f"{j.get('unmatched', 0):,} images the catalog marked as chosen had no matching "
+                "raw file in the scanned folders. Usually the folder filter is too narrow, or "
+                "the raws were moved after the catalog last saw them.")
+        else:
+            add("PASS", f"Catalog label matched {rate:.0%} of its images to files on disk",
+                f"{j.get('matched_by_catalog', 0):,} frames joined by filename stem. The "
+                "delivered gallery never had to exist locally.")
+    elif j.get("delivered_files"):
         rate = matched / j["delivered_files"]
         if rate < 0.9:
             add("WARN", f"Only {rate:.0%} of delivered files matched a source frame",
@@ -434,6 +446,8 @@ def render_markdown(a: dict, findings: list[dict], meta: dict, title: str) -> st
     w(f"| Delivered files found | {j.get('delivered_files', 0):,} |")
     w(f"| Matched by filename stem | {j.get('matched_by_stem', 0):,} |")
     w(f"| Matched by capture time | {j.get('matched_by_time', 0):,} |")
+    if j.get("matched_by_catalog"):
+        w(f"| Matched from Lightroom catalog | {j.get('matched_by_catalog', 0):,} |")
     w(f"| Unmatched | {j.get('unmatched', 0):,} |")
     w(f"| Ambiguous timestamp matches | {j.get('ambiguous_time', 0):,} |")
     w("")

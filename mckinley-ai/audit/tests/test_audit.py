@@ -456,38 +456,192 @@ def test_cli(tmp: Path):
     check(code == 2, f"missing --raw path should exit 2, got {code}")
 
 
-def test_catalog_inspection(tmp: Path):
-    """A catalog-shaped SQLite file should be introspected, not assumed."""
+def _build_catalog(tmp: Path, stems: list[str], published: set[str],
+                   picked: set[str] | None = None) -> Path:
+    """A catalog shaped like Lightroom's, with the tables the label path uses."""
     import sqlite3
-    from mck.catalog import inspect_catalog
-
-    lrcat = tmp / "Test.lrcat"
+    picked = picked or set()
+    lrcat = tmp / "Wedding.lrcat"
     conn = sqlite3.connect(lrcat)
-    conn.execute(
-        "CREATE TABLE Adobe_images (id_local INTEGER, rating REAL, "
-        "colorLabels TEXT, pick REAL, captureTime TEXT, fileFormat TEXT)"
-    )
-    conn.executemany(
-        "INSERT INTO Adobe_images VALUES (?,?,?,?,?,?)",
-        [(i, 4.0 if i % 3 == 0 else 1.0, "Green" if i % 3 == 0 else "",
-          1.0 if i % 4 == 0 else 0.0, "2025-06-14T15:00:00", "RAW") for i in range(30)],
-    )
-    conn.execute("CREATE TABLE AgLibraryFile (id_local INTEGER, baseName TEXT, extension TEXT)")
+    conn.executescript("""
+        CREATE TABLE Adobe_images (id_local INTEGER PRIMARY KEY, rating REAL,
+            colorLabels TEXT, pick REAL, captureTime TEXT, fileFormat TEXT,
+            touchTime REAL, rootFile INTEGER, masterImage INTEGER);
+        CREATE TABLE AgLibraryFile (id_local INTEGER PRIMARY KEY, baseName TEXT,
+            extension TEXT, folder INTEGER, originalFilename TEXT);
+        CREATE TABLE AgLibraryFolder (id_local INTEGER PRIMARY KEY,
+            pathFromRoot TEXT, rootFolder INTEGER);
+        CREATE TABLE AgLibraryRootFolder (id_local INTEGER PRIMARY KEY,
+            absolutePath TEXT, name TEXT);
+        CREATE TABLE AgLibraryCollection (id_local INTEGER PRIMARY KEY, name TEXT,
+            parent INTEGER, systemOnly INTEGER);
+        CREATE TABLE AgLibraryCollectionImage (id_local INTEGER PRIMARY KEY,
+            collection INTEGER, image INTEGER);
+        CREATE TABLE AgLibraryPublishedCollection (id_local INTEGER PRIMARY KEY,
+            name TEXT, remoteCollectionId TEXT);
+        CREATE TABLE AgRemotePhoto (id_local INTEGER PRIMARY KEY, collection INTEGER,
+            photo INTEGER, mostRecentPublishTime REAL, remoteId TEXT);
+        CREATE TABLE Adobe_libraryImageDevelopHistoryStep (id_local INTEGER PRIMARY KEY,
+            image INTEGER, dateCreated REAL, name TEXT, relValueString TEXT);
+    """)
+    conn.execute("INSERT INTO AgLibraryRootFolder VALUES (1,'/Volumes/The Beast/','Beast')")
+    conn.execute("INSERT INTO AgLibraryFolder VALUES (1,'2025-06-14 Smith/RAW/',1)")
+    conn.execute("INSERT INTO AgLibraryPublishedCollection VALUES (1,'Pic-Time Gallery','g1')")
+    conn.execute("INSERT INTO AgLibraryCollection VALUES (1,'Smith Final Delivery',NULL,0)")
+
+    for i, stem in enumerate(stems, start=1):
+        conn.execute("INSERT INTO AgLibraryFile VALUES (?,?,?,?,?)",
+                     (i, stem, "CR2", 1, stem + ".CR2"))
+        conn.execute(
+            "INSERT INTO Adobe_images (id_local,rating,colorLabels,pick,captureTime,"
+            "fileFormat,rootFile) VALUES (?,?,?,?,?,?,?)",
+            (i, 4.0 if stem in published else 1.0,
+             "Green" if stem in published else "",
+             1.0 if stem in picked else 0.0,
+             "2025-06-14T15:00:00", "RAW", i))
+        if stem in published:
+            conn.execute("INSERT INTO AgRemotePhoto (collection,photo,remoteId) VALUES (1,?,?)",
+                         (i, f"r{i}"))
+            conn.execute("INSERT INTO AgLibraryCollectionImage (collection,image) VALUES (1,?)",
+                         (i,))
+    conn.execute("INSERT INTO Adobe_libraryImageDevelopHistoryStep (image,dateCreated,name) "
+                 "VALUES (1,0,'Exposure')")
     conn.commit()
     conn.close()
+    return lrcat
 
-    result = inspect_catalog(lrcat)
-    check(result["readable"], f"catalog should be readable: {result.get('error')}")
-    check(result["tables"]["Adobe_images"]["present"], "Adobe_images should be detected")
-    check(result["tables"]["Adobe_images"]["rows"] == 30, "row count should be reported")
-    check("pick_distribution" in result, "pick flags should be summarized")
-    check(any("pick/reject flag" in f for f in result["findings"]),
-          "pick flags should produce a finding about catalog-only state")
-    check(not result["tables"]["Adobe_imageDevelopSettings"]["present"],
-          "absent tables should be reported absent, not crash")
+
+def test_catalog_label_discovery(tmp: Path):
+    from mck.catalog import (
+        delivered_stems, discover_label_sources, extract_images, inspect_catalog,
+        open_catalog, read_extract, render_catalog_report, write_extract,
+    )
+
+    stems = [f"IMG_{1000 + i}" for i in range(40)]
+    published = set(stems[:10])
+    picked = set(stems[:14])
+    lrcat = _build_catalog(tmp, stems, published, picked)
+
+    with open_catalog(lrcat) as conn:
+        sources = discover_label_sources(conn)
+        rows = extract_images(conn)
+
+    check(sources["total_images"] == 40, f"got {sources['total_images']}")
+    kinds = [c["kind"] for c in sources["candidates"]]
+    check(kinds[0] == "published", f"published must rank first, got {kinds}")
+    for expected in ("published", "collection", "pick", "color", "rating"):
+        check(expected in kinds, f"{expected} should be discovered, got {kinds}")
+
+    pub = next(c for c in sources["candidates"] if c["kind"] == "published")
+    check(pub["images"] == 10, f"published count wrong: {pub['images']}")
+    check(any("Pic-Time" in (c["name"] or "") for c in pub["collections"]),
+          "publish service name should be surfaced")
+
+    coll = next(c for c in sources["candidates"] if c["kind"] == "collection")
+    check(any("Final Delivery" in c["name"] for c in coll["collections"]),
+          "delivery-named collection should be detected")
+
+    check(len(rows) == 40, f"extract should return every image, got {len(rows)}")
+    check(all(r["folder"].startswith("/Volumes/The Beast/") for r in rows),
+          "folder path should join root + pathFromRoot")
+
+    check(delivered_stems(rows, "published") == {s.lower() for s in published},
+          "published stems wrong")
+    check(len(delivered_stems(rows, "pick")) == 14, "pick stems wrong")
+    check(len(delivered_stems(rows, "rating", threshold=3)) == 10, "rating stems wrong")
+    check(len(delivered_stems(rows, "collection", collection="final delivery")) == 10,
+          "collection stems wrong")
+    check(delivered_stems(rows, "rating", threshold=5) == set(),
+          "an unreachable threshold should select nothing")
+
+    out = tmp / "labels.csv"
+    write_extract(rows, out)
+    reloaded = read_extract(out)
+    check(len(reloaded) == 40, "round-trip should preserve every row")
+    check(delivered_stems(reloaded, "published") == delivered_stems(rows, "published"),
+          "round-trip must preserve the published flag")
+
+    report = inspect_catalog(lrcat)
+    check(report["readable"], f"catalog should be readable: {report.get('error')}")
+    check(any("Strongest available label" in f for f in report["findings"]),
+          f"should recommend a label source: {report['findings']}")
+    text = render_catalog_report(report)
+    check("--label-source published" in text, "report should name the flag to use")
+    check("2025-06-14 Smith" in text, "folder summary should locate the wedding")
+
+    filtered = inspect_catalog(lrcat, folder_filter="nonexistent-wedding")
+    check(filtered["folder_matches"] == 0, "a bad folder filter should match nothing")
 
     missing = inspect_catalog(tmp / "nope.lrcat")
     check(not missing["readable"], "a missing catalog should fail cleanly")
+
+
+def test_catalog_missing_tables_degrade(tmp: Path):
+    """A catalog without the optional tables must still yield what it has."""
+    import sqlite3
+    from mck.catalog import discover_label_sources, extract_images, open_catalog
+
+    lrcat = tmp / "Sparse.lrcat"
+    conn = sqlite3.connect(lrcat)
+    conn.execute("CREATE TABLE Adobe_images (id_local INTEGER PRIMARY KEY, rating REAL, "
+                 "rootFile INTEGER)")
+    conn.executemany("INSERT INTO Adobe_images VALUES (?,?,?)",
+                     [(i, 4.0 if i < 5 else 0.0, i) for i in range(20)])
+    conn.commit(); conn.close()
+
+    with open_catalog(lrcat) as conn:
+        sources = discover_label_sources(conn)
+        rows = extract_images(conn)
+    kinds = [c["kind"] for c in sources["candidates"]]
+    check(kinds == ["rating"], f"only ratings exist here, got {kinds}")
+    check(len(rows) == 20, "extraction should still work without the join tables")
+    check(all(r["stem"] == "" for r in rows), "missing filenames should be blank, not crash")
+
+
+def test_scan_with_catalog_labels(tmp: Path):
+    """The audit must run with no delivered folder anywhere on disk."""
+    from mck.catalog import delivered_stems, extract_images, open_catalog
+
+    info = make_wedding(tmp / "wedding", seed=101)
+    raw_stems = sorted(p.stem for p in info["raw"].glob("*.CR2"))
+    # Publish exactly the frames the fixture treated as delivered, which is how
+    # a real catalog relates to a real gallery. Publishing an arbitrary subset
+    # would decorrelate the ratings and the audit would correctly call that out.
+    published = {p.stem for p in info["delivered"].glob("*.jpg")
+                 if p.stem in set(raw_stems)}
+    lrcat = _build_catalog(tmp, raw_stems, published)
+
+    with open_catalog(lrcat) as conn:
+        rows = extract_images(conn)
+    stems = delivered_stems(rows, "published")
+
+    records, meta = scan_wedding(
+        raw_roots=[info["raw"]], delivered_roots=[], prefer_exiftool=False,
+        label_stems=stems,
+    )
+    matched = sum(1 for r in records if r.delivered)
+    check(matched == len(published),
+          f"catalog label should mark {len(published)} frames, got {matched}")
+    check(meta["join"]["matched_by_catalog"] == len(published),
+          "join stats should record the catalog match")
+    check(all(r.match_method == "catalog" for r in records if r.delivered),
+          "delivered frames should be attributed to the catalog")
+
+    a = analyze(records, meta)
+    findings = verdicts(a)
+    check(not any(f["status"] == "FAIL" for f in findings),
+          f"a catalog-labelled wedding should not fail: "
+          f"{[f['title'] for f in findings if f['status'] == 'FAIL']}")
+    check(any("Catalog label matched" in f["title"] for f in findings),
+          f"should report the catalog join: {[f['title'] for f in findings]}")
+    check(a["bursts"]["preference_pairs"] > 0, "preference pairs should still be computed")
+
+
+def test_scan_cli_requires_a_label(tmp: Path):
+    from mck.cli import main
+    info = make_wedding(tmp / "w", seed=103)
+    code = main(["scan", "--raw", str(info["raw"]), "--out", str(tmp / "o"), "--no-exiftool"])
+    check(code == 2, f"no --delivered and no --labels must fail clearly, got {code}")
 
 
 # --- XMP writing ----------------------------------------------------------
@@ -863,7 +1017,8 @@ def run_all():
         test_no_delivered_folder_is_a_hard_fail,
         test_snapshot_diff,
         test_automator, test_automator_survives_a_broken_wedding,
-        test_cli, test_catalog_inspection,
+        test_cli, test_catalog_label_discovery, test_catalog_missing_tables_degrade,
+        test_scan_with_catalog_labels, test_scan_cli_requires_a_label,
         test_xmp_write_preserves_everything_else, test_xmp_write_element_form_and_creation,
         test_cull_automator, test_cull_waits_for_copy_to_finish, test_cull_write_mode_backs_up,
         test_jpeg_dimensions, test_editorial_ready, test_editorial_blocks_on_spec_and_count,

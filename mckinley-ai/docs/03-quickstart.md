@@ -3,13 +3,18 @@
 Copy-paste steps for running the Phase 0 audit on a Mac, against the archive
 drives. Everything here is read-only with respect to photographs and sidecars.
 
+> **The label comes from the Lightroom catalog, not from a delivered folder.**
+> The client galleries live in Pic-Time and were never kept on disk, so there is
+> no folder of finals to join against. Every `.lrcat` was kept, and the catalog
+> records which frames were chosen. Steps 2 and 3 below are that path.
+
 ## Install
 
 Python 3.10+ is already on macOS. There are no package dependencies.
 
 ```bash
-mkdir -p ~/Sandbox/"McKinley G Photography"/R\&D\ Lab
-cd ~/Sandbox/"McKinley G Photography"/R\&D\ Lab
+cd ~/Sandbox/"McKinley G Photography"
+mkdir -p "R&D Lab" && cd "R&D Lab"
 
 git clone --branch claude/mckinley-ai-photography-6d53ak \
     https://github.com/mtgriggs/ListPlus.git mckinley-ai-repo
@@ -17,6 +22,9 @@ git clone --branch claude/mckinley-ai-photography-6d53ak \
 cd mckinley-ai-repo/mckinley-ai/audit
 python3 -m mck --help
 ```
+
+If `git` prompts to install the Xcode command line tools, accept, then re-run
+the clone. Every later command assumes you are in that `audit` directory.
 
 Optional but recommended, and worth the two minutes. It takes capture-time
 coverage from "most raw formats" to "all of them", and capture time drives
@@ -69,7 +77,52 @@ python3 -m mck discover --archive "/Volumes/The Beast" \
 Keep whichever pair of `--raw-names` / `--delivered-names` gets most folders to
 `OK`. You will reuse them below.
 
-## Step 2: audit one wedding
+## Step 2: find the label in a catalog
+
+**Close Lightroom first.** The catalog is copied before opening and opened
+read-only, but SQLite will refuse on a live lock.
+
+```bash
+python3 -m mck catalog --lrcat "/path/to/Your-Catalog.lrcat"
+```
+
+This reports every candidate label the catalog holds, strongest first, and tells
+you which flag to use:
+
+```
+Candidate labels, strongest first:
+
+  [strongest] Published photos (publish service upload log)
+              38,204 images (18% of catalog)   --label-source published
+              A literal record of frames uploaded through a Lightroom publish
+              service. If galleries were delivered this way, this is the
+              delivered set, exactly.
+                - Pic-Time Gallery: 38,204
+
+  [strong   ] Pick / reject flags
+              41,880 images (19% of catalog)   --label-source pick
+```
+
+Which one you get depends on how you actually worked:
+
+| If the catalog shows | It means | Use |
+| --- | --- | --- |
+| Published photos | You uploaded through the Pic-Time Lightroom plugin | `--label-source published` |
+| Delivery-named collections | You gathered finals into a collection before exporting | `--label-source collection --collection "name"` |
+| Pick flags | You culled with P/X rather than stars | `--label-source pick` |
+| Only ratings | You culled with stars and exported by filter | `--label-source rating` |
+
+Then extract the per-image rows. `--folder-filter` isolates one wedding out of a
+catalog holding many; it is a case-insensitive substring of the folder path, and
+the report above lists your largest folders so you can copy one:
+
+```bash
+python3 -m mck catalog --lrcat "/path/to/Your-Catalog.lrcat" \
+    --folder-filter "2025-06-14 Smith" \
+    --extract ./labels-smith.csv
+```
+
+## Step 3: audit one wedding
 
 Pick a typical recent wedding where both the raws and the delivered gallery are
 intact. Two shooters is better than one, it exercises the per-body burst
@@ -77,11 +130,15 @@ grouping.
 
 ```bash
 python3 -m mck scan \
-  --raw       "/Volumes/The Beast/2025-06-14 Smith/RAW" \
-  --delivered "/Volumes/The Beast/2025-06-14 Smith/Delivered" \
-  --out       ~/Sandbox/"McKinley G Photography"/R\&D\ Lab/mckinley-audit/smith \
-  --title     "Smith 2025"
+  --raw          "/Volumes/The Beast/2025-06-14 Smith/RAW" \
+  --labels       ./labels-smith.csv \
+  --label-source published \
+  --out          ~/Sandbox/"McKinley G Photography"/"R&D Lab"/mckinley-audit/smith \
+  --title        "Smith 2025"
 ```
+
+`--delivered` still works if a folder of finals ever does exist. Give one or the
+other; without a label there is nothing to audit against.
 
 Takes a few minutes. Then read `AUDIT_REPORT.md` in that output folder.
 
@@ -92,13 +149,13 @@ and `Cmd+S`. This does not modify the raws. If you would rather not touch the
 catalog, skip it and run `python3 -m mck catalog --lrcat ...` instead, with
 Lightroom closed.
 
-## Step 3: the self-consistency test
+## Step 4: the self-consistency test
 
 This is the one that sets the ceiling for the whole project, and it is the only
 step the tooling cannot do for you. Procedure is in
 [the runbook](01-data-audit-runbook.md), section 6. About 90 minutes.
 
-## Step 4: the whole archive, unattended
+## Step 5: the whole archive, unattended
 
 Once one wedding audits cleanly:
 
@@ -116,7 +173,7 @@ are reprocessed. One bad wedding does not stop the run.
 
 Read `ROLLUP.md` when it finishes.
 
-## Step 5: start capturing disagreements
+## Step 6: start capturing disagreements
 
 Do this on your next wedding regardless of what the audit says. It is the only
 part of the project where waiting costs something permanent.
@@ -147,7 +204,7 @@ Six numbers decide whether Phase 1 is worth building:
 | Star-rating AUC | `AUDIT_REPORT.md` |
 | Near-duplicate share of drops | `AUDIT_REPORT.md` |
 | Total preference pairs | `ROLLUP.md` |
-| Self-consistency on burst winners | Step 3 |
+| Self-consistency on burst winners | Step 4 |
 
 `AUDIT_REPORT.md` and `ROLLUP.md` are small text files and contain no images,
 so pasting them back is easy. They do contain file paths and client folder

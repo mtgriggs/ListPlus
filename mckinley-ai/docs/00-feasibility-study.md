@@ -71,6 +71,15 @@ which you are building is worth 90 minutes.
 
 ### 3.1 The label you need already exists, and it isn't in Aftershoot
 
+> **Correction, September 2026.** This section originally assumed the delivered
+> galleries sat on disk. They do not: finals live in Pic-Time and were never
+> kept locally. The argument below still holds, but the label is read from the
+> Lightroom catalogs instead of from a folder of JPEGs. Every `.lrcat` was kept,
+> and the catalog is arguably the better record anyway, because it holds pick
+> flags and collection membership that a folder of exports cannot express, and
+> it survives renames and re-exports. See `mck catalog` and
+> [the quickstart](03-quickstart.md) step 2.
+
 You framed this as extracting decisions from Lightroom/Aftershoot metadata. The
 stronger label is simpler and you already have it for every wedding you have
 ever shot:
