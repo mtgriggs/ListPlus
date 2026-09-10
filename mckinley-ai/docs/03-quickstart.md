@@ -35,7 +35,42 @@ to source frames:
 brew install exiftool
 ```
 
-## Step 1: see what is actually on the drives
+## Step 1: one command, one file
+
+Rather than running the reconnaissance piece by piece, this does all of it and
+writes a single report to hand back:
+
+```bash
+python3 -m mck bootstrap --out ./handoff
+```
+
+It surveys every attached volume, finds your Lightroom catalogs in the usual
+locations, reads each one, and writes `./handoff/HANDOFF.md`. Nothing is
+modified; catalogs are copied before opening and opened read-only, so
+**close Lightroom first**.
+
+That one file answers all three open questions: which folder-name flags the
+archive run needs, which catalog signal becomes the keep/drop label, and which
+wedding to audit first.
+
+If the drives are not mounted at `/Volumes`, or the catalogs live somewhere
+unusual, point at them directly:
+
+```bash
+python3 -m mck bootstrap --out ./handoff \
+    --archive "/Volumes/The Beast" \
+    --archive "/Volumes/MG Photography Main" \
+    --catalog "/path/to/Your-Catalog.lrcat"
+```
+
+> The report lists folder and catalog names, which for a wedding archive means
+> client names. No images, no contact details. Worth a glance before sending it
+> anywhere.
+
+The two steps below are the same work done manually, if you would rather see it
+piece by piece or the one-shot misses something.
+
+## Step 1a: see what is actually on the drives
 
 The automator finds weddings by folder name, and it does not yet know yours.
 Run this first so a zero-match result explains itself instead of looking like a
@@ -77,7 +112,7 @@ python3 -m mck discover --archive "/Volumes/The Beast" \
 Keep whichever pair of `--raw-names` / `--delivered-names` gets most folders to
 `OK`. You will reuse them below.
 
-## Step 2: find the label in a catalog
+## Step 1b: find the label in a catalog
 
 **Close Lightroom first.** The catalog is copied before opening and opened
 read-only, but SQLite will refuse on a live lock.

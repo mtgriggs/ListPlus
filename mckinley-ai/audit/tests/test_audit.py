@@ -461,6 +461,7 @@ def _build_catalog(tmp: Path, stems: list[str], published: set[str],
     """A catalog shaped like Lightroom's, with the tables the label path uses."""
     import sqlite3
     picked = picked or set()
+    tmp.mkdir(parents=True, exist_ok=True)
     lrcat = tmp / "Wedding.lrcat"
     conn = sqlite3.connect(lrcat)
     conn.executescript("""
@@ -1002,6 +1003,71 @@ def test_discover_cli(tmp: Path):
     check(main(["discover", "--archive", str(tmp / "nope")]) == 2, "missing archive exits 2")
 
 
+def test_bootstrap(tmp: Path):
+    """One command must produce one handoff file covering drives and catalogs."""
+    from mck.bootstrap import find_catalogs, render, run
+
+    archive = tmp / "Beast"
+    make_wedding(archive / "2025-06-14 Smith", seed=111)
+    odd = archive / "2024-09-21 Alvarez"
+    (odd / "CR3 Files").mkdir(parents=True)
+    (odd / "CR3 Files" / "IMG_1.CR2").write_bytes(b"x")
+
+    stems = [f"IMG_{2000 + i}" for i in range(20)]
+    lrcat = _build_catalog(tmp / "cat", stems, set(stems[:6]))
+    # A dated duplicate in a Backups folder must be recognised and skipped.
+    backups = tmp / "cat" / "Backups" / "2025-01-01"
+    backups.mkdir(parents=True)
+    (backups / "Wedding.lrcat").write_bytes(lrcat.read_bytes())
+
+    found = find_catalogs(extra_roots=[tmp / "cat"])
+    check(len(found) == 2, f"both catalogs should be found, got {len(found)}")
+    check(sum(1 for f in found if f["is_backup"]) == 1,
+          "the Backups copy should be flagged as a backup")
+    check(found[0]["is_backup"] is False, "real catalogs should sort ahead of backups")
+
+    out = tmp / "handoff"
+    payload = run(out_dir=out, archives=[archive], catalogs=None,
+                  skip_catalog_search=True, log=lambda *_: None)
+    check(len(payload["archives"]) == 1, "the archive should be surveyed")
+    check(payload["catalog_files"] == [], "catalog search was skipped")
+
+    payload = run(out_dir=out, archives=[archive], catalogs=[lrcat],
+                  log=lambda *_: None)
+    check(len(payload["catalogs"]) == 1, "the given catalog should be inspected")
+    check(payload["catalogs"][0]["readable"], "the catalog should read")
+
+    check((out / "HANDOFF.md").exists(), "handoff report should be written")
+    check((out / "handoff.json").exists(), "handoff json should be written")
+
+    md = (out / "HANDOFF.md").read_text(encoding="utf-8")
+    check("## Archives" in md and "## Lightroom catalogs" in md,
+          "handoff needs both sections")
+    check("2025-06-14 Smith" in md, "archive folders should appear")
+    check("--label-source" in md, "handoff should name the label flag to use")
+    check("client names" in md, "handoff must carry the privacy note")
+
+    # A drive that is not attached must not break the pass.
+    payload = run(out_dir=tmp / "h2", archives=[tmp / "not-attached"],
+                  skip_catalog_search=True, log=lambda *_: None)
+    check(payload["archives"][0]["exists"] is False, "a missing drive is reported, not fatal")
+    check("Archive not found" in render(payload), "handoff should say the drive is missing")
+
+
+def test_bootstrap_cli(tmp: Path):
+    from mck.cli import main
+
+    archive = tmp / "Beast"
+    make_wedding(archive / "2025-06-14 Smith", seed=113)
+    stems = [f"IMG_{i}" for i in range(10)]
+    lrcat = _build_catalog(tmp / "cat", stems, set(stems[:3]))
+
+    code = main(["bootstrap", "--out", str(tmp / "hand"),
+                 "--archive", str(archive), "--catalog", str(lrcat)])
+    check(code == 0, f"bootstrap should exit 0, got {code}")
+    check((tmp / "hand" / "HANDOFF.md").exists(), "CLI should write the handoff")
+
+
 # --- runner ---------------------------------------------------------------
 
 def run_all():
@@ -1024,6 +1090,7 @@ def run_all():
         test_jpeg_dimensions, test_editorial_ready, test_editorial_blocks_on_spec_and_count,
         test_editorial_exclusivity, test_editorial_cli,
         test_discover_survey, test_discover_cli,
+        test_bootstrap, test_bootstrap_cli,
     ]
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)

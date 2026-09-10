@@ -49,7 +49,11 @@ recommended, not required.
 ```bash
 cd audit
 
-# See what an archive drive actually contains, and whether it will be matched
+# One-shot reconnaissance: surveys every attached drive, finds and reads every
+# Lightroom catalog, writes a single HANDOFF.md. Close Lightroom first.
+python3 -m mck bootstrap --out ./handoff
+
+# Or piece by piece
 python3 -m mck discover --archive "/Volumes/The Beast"
 
 # Audit one wedding
@@ -130,13 +134,14 @@ mckinley-ai/
     │   ├── snapshot.py    sidecar snapshots and disagreement diffs
     │   ├── catalog.py     Lightroom .lrcat introspection
     │   ├── automate.py    archive-wide audit automator, ledger, roll-up
+    │   ├── bootstrap.py   one-shot drive + catalog reconnaissance
     │   ├── cullwatch.py   culling automator: intake watcher and pre-cull
     │   ├── editorial.py   editorial automator: specs, coverage, exclusivity
     │   ├── xmpwrite.py    safe, backup-first sidecar writing
     │   └── cli.py         command-line interface
     └── tests/
         ├── make_fixtures.py   synthetic wedding generator
-        └── test_audit.py      37 tests
+        └── test_audit.py      39 tests
 ```
 
 ```bash

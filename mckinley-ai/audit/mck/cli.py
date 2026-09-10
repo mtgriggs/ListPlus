@@ -17,6 +17,7 @@ from pathlib import Path
 from .automate import (
     RAW_DIR_NAMES, DELIVERED_DIR_NAMES, render_survey, run_archive, survey_archive, watch,
 )
+from . import bootstrap as _bootstrap
 from .catalog import (
     delivered_stems, extract_images, inspect_catalog, open_catalog,
     read_extract, render_catalog_report, write_extract,
@@ -105,6 +106,29 @@ def cmd_scan(args) -> int:
             print(f"  [{f['status']}] {f['title']}")
     print()
     print(f"Report: {out_dir / 'AUDIT_REPORT.md'}")
+    return 0
+
+
+def cmd_bootstrap(args) -> int:
+    out_dir = Path(args.out).expanduser()
+    payload = _bootstrap.run(
+        out_dir=out_dir,
+        archives=_paths(args.archive) or None,
+        catalogs=_paths(args.catalog) or None,
+        skip_catalog_search=args.no_catalog_search,
+    )
+    readable = [c for c in payload["catalogs"] if c.get("readable")]
+    print()
+    print(f"  archives surveyed  {len(payload['archives'])}")
+    print(f"  catalogs found     {len(payload['catalog_files'])}")
+    print(f"  catalogs read      {len(readable)}")
+    print()
+    print(f"Send me this file: {out_dir / 'HANDOFF.md'}")
+    if not readable and payload["catalog_files"]:
+        print()
+        print("None of the catalogs could be read. Close Lightroom and re-run.",
+              file=sys.stderr)
+        return 1
     return 0
 
 
@@ -224,7 +248,13 @@ def cmd_catalog(args) -> int:
               file=sys.stderr)
         return 1
 
-    print(render_catalog_report(result))
+    text = render_catalog_report(result)
+    if args.out:
+        out_path = Path(args.out).expanduser()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(text, encoding="utf-8")
+        print(f"Report written to {out_path}")
+    print(text)
     return 0
 
 
@@ -414,6 +444,17 @@ def build_parser() -> argparse.ArgumentParser:
     d2.add_argument("--json", action="store_true")
     d2.set_defaults(func=cmd_discover)
 
+    b = sub.add_parser("bootstrap",
+                       help="one-shot: survey drives and catalogs into a single report")
+    b.add_argument("--out", default="./handoff", help="output directory")
+    b.add_argument("--archive", action="append",
+                   help="archive root (repeatable). Default: every attached volume.")
+    b.add_argument("--catalog", action="append",
+                   help=".lrcat path (repeatable). Default: search the usual locations.")
+    b.add_argument("--no-catalog-search", action="store_true",
+                   help="skip searching for catalogs")
+    b.set_defaults(func=cmd_bootstrap)
+
     n = sub.add_parser("snapshot", help="freeze current sidecar state")
     n.add_argument("--raw", action="append", required=True, help="folder to snapshot (repeatable)")
     n.add_argument("--out", default="./snapshots", help="snapshot directory")
@@ -433,6 +474,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--folder-filter", help="case-insensitive substring of the folder path, "
                                            "to isolate one wedding inside a large catalog")
     c.add_argument("--collection", help="case-insensitive collection name filter")
+    c.add_argument("--out", help="also write the report to this file")
     c.add_argument("--json", action="store_true")
     c.set_defaults(func=cmd_catalog)
 
