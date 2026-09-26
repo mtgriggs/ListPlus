@@ -70,7 +70,7 @@ python3 -m mck bootstrap --out ./handoff \
 The two steps below are the same work done manually, if you would rather see it
 piece by piece or the one-shot misses something.
 
-## Step 1a: see what is actually on the drives
+## Step 1a (optional): see what is actually on the drives
 
 The automator finds weddings by folder name, and it does not yet know yours.
 Run this first so a zero-match result explains itself instead of looking like a
@@ -112,7 +112,7 @@ python3 -m mck discover --archive "/Volumes/The Beast" \
 Keep whichever pair of `--raw-names` / `--delivered-names` gets most folders to
 `OK`. You will reuse them below.
 
-## Step 1b: find the label in a catalog
+## Step 1b (optional): find the label in a catalog
 
 **Close Lightroom first.** The catalog is copied before opening and opened
 read-only, but SQLite will refuse on a live lock.
@@ -157,11 +157,12 @@ python3 -m mck catalog --lrcat "/path/to/Your-Catalog.lrcat" \
     --extract ./labels-smith.csv
 ```
 
-## Step 3: audit one wedding
+## Step 2: audit one wedding
 
-Pick a typical recent wedding where both the raws and the delivered gallery are
-intact. Two shooters is better than one, it exercises the per-body burst
-grouping.
+Pick a typical recent wedding whose raws are still on the drive and whose
+catalog you extracted labels from in step 1. Two shooters is better than one,
+it exercises the per-body burst grouping. Not Jack and Ella's, that was not a
+full day.
 
 ```bash
 python3 -m mck scan \
@@ -177,27 +178,27 @@ other; without a label there is nothing to audit against.
 
 Takes a few minutes. Then read `AUDIT_REPORT.md` in that output folder.
 
-Before running it, if your cull decisions live in Lightroom and were never
-written to disk, write the sidecars out first: open the catalog, *Catalog
-Settings → Metadata → Automatically write changes into XMP*, then select all
-and `Cmd+S`. This does not modify the raws. If you would rather not touch the
-catalog, skip it and run `python3 -m mck catalog --lrcat ...` instead, with
-Lightroom closed.
+The keep/drop label comes from the catalog extract, so this works whether or not
+sidecars were ever written to disk. Writing them out does add the develop
+settings and any star ratings, which is what the style and rating-quality parts
+of the report measure: open the catalog, *Catalog Settings → Metadata →
+Automatically write changes into XMP*, select all, `Cmd+S`. That does not modify
+the raws.
 
-## Step 4: the self-consistency test
+## Step 3: the self-consistency test
 
 This is the one that sets the ceiling for the whole project, and it is the only
 step the tooling cannot do for you. Procedure is in
 [the runbook](01-data-audit-runbook.md), section 6. About 90 minutes.
 
-## Step 5: the whole archive, unattended
+## Step 4: the whole archive, unattended
 
 Once one wedding audits cleanly:
 
 ```bash
 python3 -m mck auto \
   --archive "/Volumes/The Beast" \
-  --out ~/Sandbox/"McKinley G Photography"/R\&D\ Lab/mckinley-audit \
+  --out ~/Sandbox/"McKinley G Photography"/"R&D Lab"/mckinley-audit \
   --raw-names "raw,cr3 files" \
   --delivered-names "delivered,client gallery"
 ```
@@ -208,13 +209,13 @@ are reprocessed. One bad wedding does not stop the run.
 
 Read `ROLLUP.md` when it finishes.
 
-## Step 6: start capturing disagreements
+## Step 5: start capturing disagreements
 
 Do this on your next wedding regardless of what the audit says. It is the only
 part of the project where waiting costs something permanent.
 
 ```bash
-CULL=~/Sandbox/"McKinley G Photography"/R\&D\ Lab/mckinley-audit/snapshots
+CULL=~/Sandbox/"McKinley G Photography"/"R&D Lab"/mckinley-audit/snapshots
 
 # right after the automated cull, before you review anything
 python3 -m mck snapshot --raw "/Volumes/The Beast/2026-09-20 Wedding/RAW" \
@@ -239,7 +240,7 @@ Six numbers decide whether Phase 1 is worth building:
 | Star-rating AUC | `AUDIT_REPORT.md` |
 | Near-duplicate share of drops | `AUDIT_REPORT.md` |
 | Total preference pairs | `ROLLUP.md` |
-| Self-consistency on burst winners | Step 4 |
+| Self-consistency on burst winners | Step 3 |
 
 `AUDIT_REPORT.md` and `ROLLUP.md` are small text files and contain no images,
 so pasting them back is easy. They do contain file paths and client folder
