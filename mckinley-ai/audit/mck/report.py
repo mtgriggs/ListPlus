@@ -27,6 +27,101 @@ from .stats import auc, cluster_timestamps, contingency, describe, entropy
 from .xmp import DEVELOP_FIELDS
 
 
+# McKinley's star taxonomy, confirmed September 2026. Stars 1-3 are *reason
+# codes* for rejection, not a quality ordering: a 3-star duplicate is often a
+# perfectly good frame that lost to a near-identical sibling, and sits below a
+# 2-star blurry frame only by accident of the scale. Stars 4-5 are an actual
+# quality scale over survivors.
+RATING_MEANING = {
+    0: "unrated",
+    1: "rejected",
+    2: "blurry / technical",
+    3: "duplicate, lost to a sibling",
+    4: "keeper",
+    5: "highlight, website-worthy",
+}
+KEEP_STAR = 4          # 4 and 5 are delivered
+DUPLICATE_STAR = 3     # the losing frame of a near-identical set
+BLUR_STAR = 2
+HIGHLIGHT_STAR = 5
+
+
+def _taxonomy(records: list[ImageRecord]) -> dict:
+    """Read the star ratings as the reason codes they actually are.
+
+    Three things this measures that an ordinal reading cannot:
+
+    * **Annotated preference pairs.** A 3 sharing a burst with a 4 or 5 is an
+      explicit "I preferred that one over this one" under near-identical
+      conditions, recorded by hand at cull time. These do not need inferring.
+    * **Duplicate-code consistency.** If frames marked 3 rarely sit in a burst
+      with a winner, either the bursts are being detected wrongly or the 3 is
+      being used for something other than duplicates.
+    * **Free technical labels.** Every 2 is a labelled blur example.
+    """
+    by_star: dict[int, dict] = {}
+    for r in records:
+        star = r.rating
+        if star is None:
+            continue
+        bucket = by_star.setdefault(star, {"n": 0, "delivered": 0})
+        bucket["n"] += 1
+        if r.delivered:
+            bucket["delivered"] += 1
+    for star, bucket in by_star.items():
+        bucket["meaning"] = RATING_MEANING.get(star, "unknown")
+        bucket["keep_rate"] = round(bucket["delivered"] / bucket["n"], 4) if bucket["n"] else 0.0
+
+    bursts: dict[int, list[ImageRecord]] = {}
+    for r in records:
+        if r.burst_id is not None:
+            bursts.setdefault(r.burst_id, []).append(r)
+
+    annotated_pairs = 0
+    threes_total = threes_with_winner = 0
+    for members in bursts.values():
+        winners = [m for m in members if (m.rating or 0) >= KEEP_STAR]
+        losers = [m for m in members if m.rating == DUPLICATE_STAR]
+        annotated_pairs += len(winners) * len(losers)
+        threes_total += len(losers)
+        if winners:
+            threes_with_winner += len(losers)
+
+    # How well does "4 or better" agree with what the catalog says was delivered?
+    # Precision and recall are the right frame here, not AUC: the star rule is a
+    # threshold decision, and 1-3 have no meaningful internal ordering to rank.
+    tp = sum(1 for r in records if (r.rating or 0) >= KEEP_STAR and r.delivered)
+    fp = sum(1 for r in records if (r.rating or 0) >= KEEP_STAR and not r.delivered)
+    fn = sum(1 for r in records if (r.rating or 0) < KEEP_STAR and r.delivered)
+    rated = [r for r in records if r.rating is not None]
+
+    colors = Counter(r.label for r in records if r.label)
+    colors_delivered = Counter(r.label for r in records if r.label and r.delivered)
+
+    return {
+        "by_star": dict(sorted(by_star.items())),
+        "annotated_preference_pairs": annotated_pairs,
+        "duplicates_total": threes_total,
+        "duplicates_in_a_burst_with_a_winner": threes_with_winner,
+        "duplicate_consistency": (
+            round(threes_with_winner / threes_total, 4) if threes_total else 0.0
+        ),
+        "blur_labels": by_star.get(BLUR_STAR, {}).get("n", 0),
+        "highlights": by_star.get(HIGHLIGHT_STAR, {}).get("n", 0),
+        "star_rule": {
+            "precision": round(tp / (tp + fp), 4) if (tp + fp) else 0.0,
+            "recall": round(tp / (tp + fn), 4) if (tp + fn) else 0.0,
+            "true_positive": tp, "false_positive": fp, "false_negative": fn,
+            "rated_frames": len(rated),
+        },
+        "colors": {
+            c: {"n": n, "delivered": colors_delivered.get(c, 0),
+                "keep_rate": round(colors_delivered.get(c, 0) / n, 4) if n else 0.0}
+            for c, n in colors.most_common()
+        },
+    }
+
+
 def _fmt_epoch(epoch: float | None) -> str:
     """Format as wall-clock time.
 
@@ -195,6 +290,7 @@ def analyze(records: list[ImageRecord], meta: dict) -> dict:
             "rating_coverage": round(len(rated) / n, 4) if n else 0.0,
         },
         "join": meta.get("join", {}),
+        "taxonomy": _taxonomy(records),
         "labels": {
             "rating_auc": round(rating_auc, 4) if rating_auc is not None else None,
             "rating_distribution": rating_keep,
@@ -325,6 +421,49 @@ def verdicts(a: dict) -> list[dict]:
         add("FAIL", f"Star ratings do not predict delivery (AUC {r_auc:.2f})",
             "The ratings in this archive are close to noise with respect to what you "
             "actually delivered. Do not train on them.")
+
+    # 4b. The star taxonomy, read as reason codes.
+    t = a["taxonomy"]
+    pairs = t["annotated_preference_pairs"]
+    if pairs:
+        add("PASS", f"{pairs:,} hand-annotated preference pairs",
+            f"{t['duplicates_in_a_burst_with_a_winner']:,} frames marked 3 (duplicate) sit in a "
+            "burst alongside a 4 or 5. Each is an explicit 'I picked that one over this one' "
+            "under near-identical conditions, recorded at cull time. This is the signal that "
+            "makes a personalized ranker learnable, and it did not have to be inferred.")
+    if t["duplicates_total"]:
+        consistency = t["duplicate_consistency"]
+        if consistency < 0.6:
+            add("WARN", f"Only {consistency:.0%} of 3-star frames sit in a burst with a winner",
+                f"{t['duplicates_total']:,} frames are marked 3 (duplicate) but most have no "
+                "higher-rated sibling nearby. Either the burst window needs widening "
+                "(try --burst-gap 4), or 3 is being used for something other than duplicates.")
+        else:
+            add("PASS", f"{consistency:.0%} of 3-star duplicates sit in a burst with a winner",
+                "The duplicate code and the timestamp-derived bursts agree, which means both "
+                "are trustworthy.")
+    if t["blur_labels"]:
+        add("INFO", f"{t['blur_labels']:,} frames labelled blurry (2 star)",
+            "A free, hand-labelled training set for technical-quality rejection. That is "
+            "normally the part you would have to label by hand.")
+    if t["highlights"]:
+        add("INFO", f"{t['highlights']:,} frames marked 5 star (highlight)",
+            "The most personal judgement in the taxonomy, and the natural label for an "
+            "editorial-grade scorer later.")
+
+    sr = t["star_rule"]
+    if sr["rated_frames"] and (sr["true_positive"] + sr["false_positive"]):
+        add("INFO", f"'4 or better' matches delivery with precision {sr['precision']:.0%}, "
+            f"recall {sr['recall']:.0%}",
+            f"{sr['false_positive']:,} frames rated 4+ were not delivered and "
+            f"{sr['false_negative']:,} delivered frames were rated below 4. A gap in either "
+            "direction is where the star pass and the final cut diverge, which is itself "
+            "worth training on.")
+
+    if t["colors"]:
+        add("INFO", f"Colour labels in use on {sum(c['n'] for c in t['colors'].values()):,} frames",
+            "Current usage: " + ", ".join(f"{k} {v['n']:,}" for k, v in t["colors"].items())
+            + ". Worth knowing before repurposing the colour axis.")
 
     # 5. Correction history
     s = a["sidecars"]
@@ -502,11 +641,46 @@ def render_markdown(a: dict, findings: list[dict], meta: dict, title: str) -> st
     w(f"| Drops that are near-dupe resolution | {d['share_of_drops_that_are_near_dupes']:.1%} |")
     w("")
 
+    t = a["taxonomy"]
+    if t["by_star"]:
+        w("## Star taxonomy\n")
+        w("Stars 1-3 are reason codes for rejection, not a quality ordering. "
+          "Stars 4-5 rank the survivors.\n")
+        w("| Star | Means | Frames | Delivered | Keep rate |")
+        w("| --- | --- | --- | --- | --- |")
+        for star, v in t["by_star"].items():
+            w(f"| {star} | {v['meaning']} | {v['n']:,} | {v['delivered']:,} | "
+              f"{v['keep_rate']:.1%} |")
+        w("")
+        w(f"- **Hand-annotated preference pairs: {t['annotated_preference_pairs']:,}** "
+          "(a 3 sharing a burst with a 4 or 5)")
+        w(f"- Duplicate-code consistency: **{t['duplicate_consistency']:.1%}** of 3-star frames "
+          "have a higher-rated sibling in the same burst")
+        w(f"- Blur-labelled frames (2 star): **{t['blur_labels']:,}**")
+        w(f"- Highlights (5 star): **{t['highlights']:,}**")
+        sr = t["star_rule"]
+        w(f"- '4 or better' vs actual delivery: precision **{sr['precision']:.1%}**, "
+          f"recall **{sr['recall']:.1%}** "
+          f"({sr['false_positive']:,} rated-up-but-not-delivered, "
+          f"{sr['false_negative']:,} delivered-but-rated-down)")
+        w("")
+
+    if t["colors"]:
+        w("## Colour labels, as currently used\n")
+        w("| Colour | Frames | Delivered | Keep rate |")
+        w("| --- | --- | --- | --- |")
+        for colour, v in t["colors"].items():
+            w(f"| {colour} | {v['n']:,} | {v['delivered']:,} | {v['keep_rate']:.1%} |")
+        w("")
+
     lab = a["labels"]
     if lab["rating_distribution"]:
         w("## Star rating vs delivery\n")
         w(f"Rating AUC: **{lab['rating_auc'] if lab['rating_auc'] is not None else 'n/a'}** "
-          "(0.5 = no information, 1.0 = perfect)\n")
+          "(0.5 = no information, 1.0 = perfect). Treat this as a rough check only: AUC "
+          "assumes the stars are ordered by quality, and 1-3 are reason codes with no "
+          "internal ordering. The precision and recall figures above are the honest "
+          "measure.\n")
         w("| Rating | Frames | Delivered | Keep rate |")
         w("| --- | --- | --- | --- |")
         for k, v in lab["rating_distribution"].items():

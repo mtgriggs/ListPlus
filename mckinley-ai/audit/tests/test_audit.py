@@ -1068,6 +1068,71 @@ def test_bootstrap_cli(tmp: Path):
     check((tmp / "hand" / "HANDOFF.md").exists(), "CLI should write the handoff")
 
 
+def test_star_taxonomy(tmp: Path):
+    """Stars 1-3 are reason codes; 3 next to a 4 is an annotated preference pair."""
+    from mck.report import RATING_MEANING, _taxonomy
+    from mck.scan import ImageRecord
+    from mck.exif import ExifRecord
+
+    def rec(stem, star, burst, delivered, label=None):
+        r = ImageRecord(path=Path(stem), stem=stem, ext=".cr2", size_bytes=1,
+                        exif=ExifRecord())
+        r.burst_id = burst
+        r.delivered = delivered
+        r.xmp = type("X", (), {
+            "rating": star, "label": label,
+            "process_version": None, "has_develop": False,
+            "has_nontrivial_develop": False, "already_applied": None,
+            "converted_to_grayscale": None, "preset_name": None, "mask_count": 0,
+        })()
+        return r
+
+    records = [
+        # Burst 0: a 4-star winner over two 3-star duplicates -> 2 pairs.
+        rec("a", 4, 0, True), rec("b", 3, 0, False), rec("c", 3, 0, False),
+        # Burst 1: a 5-star highlight over one duplicate -> 1 pair.
+        rec("d", 5, 1, True, "Green"), rec("e", 3, 1, False),
+        # Burst 2: duplicates with no winner -> no pairs, hurts consistency.
+        rec("f", 3, 2, False),
+        # Outright rejects, not part of any preference.
+        rec("g", 1, 3, False), rec("h", 2, 3, False), rec("i", 2, 4, False),
+        # A delivered frame the star pass rated down: a false negative.
+        rec("j", 3, 5, True),
+    ]
+
+    t = _taxonomy(records)
+
+    check(t["annotated_preference_pairs"] == 3,
+          f"expected 3 annotated pairs, got {t['annotated_preference_pairs']}")
+    check(t["duplicates_total"] == 5, f"expected 5 threes, got {t['duplicates_total']}")
+    check(t["duplicates_in_a_burst_with_a_winner"] == 3,
+          f"expected 3 threes beside a winner, got {t['duplicates_in_a_burst_with_a_winner']}")
+    check(abs(t["duplicate_consistency"] - 0.6) < 1e-9,
+          f"consistency wrong: {t['duplicate_consistency']}")
+    check(t["blur_labels"] == 2, f"expected 2 blur labels, got {t['blur_labels']}")
+    check(t["highlights"] == 1, f"expected 1 highlight, got {t['highlights']}")
+
+    check(t["by_star"][3]["meaning"] == RATING_MEANING[3], "meanings should be attached")
+    check(t["by_star"][3]["n"] == 5, "star 3 count wrong")
+    check(t["by_star"][3]["delivered"] == 1, "one 3-star frame was delivered")
+
+    sr = t["star_rule"]
+    check(sr["true_positive"] == 2, f"tp wrong: {sr['true_positive']}")
+    check(sr["false_positive"] == 0, f"fp wrong: {sr['false_positive']}")
+    check(sr["false_negative"] == 1, f"fn wrong: {sr['false_negative']}")
+    check(sr["precision"] == 1.0, f"precision wrong: {sr['precision']}")
+    check(abs(sr["recall"] - 2 / 3) < 1e-4, f"recall wrong: {sr['recall']}")
+
+    check(t["colors"]["Green"]["n"] == 1, "colour usage should be counted")
+    check(t["colors"]["Green"]["delivered"] == 1, "colour delivery should be counted")
+
+    # An archive with no ratings at all must not blow up.
+    empty = _taxonomy([rec("z", None, 0, False)])
+    check(empty["annotated_preference_pairs"] == 0, "unrated archive yields no pairs")
+    check(empty["duplicate_consistency"] == 0.0, "unrated archive has no consistency")
+    check(empty["colors"] == {}, "no colours means an empty table")
+
+
 # --- runner ---------------------------------------------------------------
 
 def run_all():
@@ -1090,7 +1155,7 @@ def run_all():
         test_jpeg_dimensions, test_editorial_ready, test_editorial_blocks_on_spec_and_count,
         test_editorial_exclusivity, test_editorial_cli,
         test_discover_survey, test_discover_cli,
-        test_bootstrap, test_bootstrap_cli,
+        test_bootstrap, test_bootstrap_cli, test_star_taxonomy,
     ]
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
