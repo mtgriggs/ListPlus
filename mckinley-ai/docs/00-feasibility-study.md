@@ -100,6 +100,64 @@ Interpretation:
 - **AUC < 0.65** — the stars in your archive are near-noise relative to what you
   delivered. Do not train on them.
 
+### 3.1a Material correction, September 2026: the archive label is mostly Aftershoot's
+
+Three facts established in conversation, which together undercut §3.1 above:
+
+1. **Everything rated 4 or higher gets delivered.** The stars are not a proxy
+   for the delivery decision; they *are* the delivery decision.
+2. **Overrides are rare.** McKinley accepts Aftershoot's ratings most of the
+   time. The exception, and it is a consistent one, is **choosing a different
+   frame among duplicates**.
+3. **The 5-star highlight is assigned by Aftershoot**, from his previously
+   chosen images, his Instagram, which of his images are performing, and what
+   suits his website.
+
+The consequence is unavoidable. The stars in the archive, and therefore the
+delivered set, are overwhelmingly *Aftershoot's judgments that were accepted*.
+A model trained on them learns to reproduce Aftershoot, expensively and
+probably worse, with the licensing exposure of §8 sitting in the middle of it.
+The 5s are the sharpest case: they are a vendor model's *prediction* of
+McKinley's taste, so training on them distils a prediction of him rather than
+learning him.
+
+**What survives is small, precise, and still valuable.** The overrides are
+almost entirely duplicate-winner choices. That is exactly the component §1
+identified as the personal half of the problem, and exactly where a generic
+model has least purchase. The project does not die; it narrows to:
+
+> Given a burst of near-identical frames, pick the one McKinley would pick.
+
+**But that dataset does not exist yet.** A sidecar holds one state, so the
+frames where he switched the winner are indistinguishable today from the ones
+he accepted. §3.3's snapshot workflow was previously a valuable extra; it is
+now the *only* source of the signal the project runs on. Nothing else in the
+archive is uncontaminated.
+
+Two ways to get that data, and they are complementary:
+
+- **Prospectively**, via `mck snapshot` on every wedding from now on. Slow, and
+  bounded by how many weddings a year get shot.
+- **Retrospectively**, by re-picking winners among bursts already in the
+  archive. The bursts are already marked: a 3 is a duplicate that lost, a 4 or 5
+  is the frame that won. Re-deciding those is fast, generates pairs at a high
+  rate, and doubles as the §2 self-consistency test, because agreement with the
+  original pick *is* the self-consistency number.
+
+### 3.1b Where the value may actually be now
+
+If Aftershoot already fits the cull well, the headroom there is thin, and the
+honest question is whether a personal culler is worth the build at all (§9).
+
+The highlight problem is a different matter. Aftershoot picks 5s from Instagram
+signals it infers. McKinley holds the actual Instagram export, his real website
+selections, and his own booking outcomes. That is strictly better data than the
+vendor has, aimed at the decision that actually drives bookings, and it feeds
+the editorial submission tooling that already exists. It is a smaller build than
+the culler and its inputs are genuinely his.
+
+Worth weighing seriously before committing to the culling model.
+
 ### 3.2 What XMP sidecars give you
 
 Confirmed for your workflow: Aftershoot writes star ratings and colour labels
