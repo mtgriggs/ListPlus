@@ -119,6 +119,32 @@ def build_tiff_exif(
     return header + ifd0 + data0 + exif_ifd + data1
 
 
+def build_sof_jpeg(width: int, height: int, marker_byte: int = 0x80) -> bytes:
+    """A structurally valid JPEG of the given dimensions, with no real image data.
+
+    Enough for the preview extractor to find it, validate its SOF and report its
+    size. A browser will not render it, which is fine: the tests only assert
+    that the right stream is located.
+    """
+    sof = b"\xff\xc0" + struct.pack(">HBHHB", 17, 8, height, width, 3) + b"\x00" * 9
+    filler = bytes([marker_byte]) * 64
+    app = b"\xff\xe0" + struct.pack(">H", len(filler) + 2) + filler
+    return b"\xff\xd8" + app + sof + b"\xff\xd9"
+
+
+def build_raw_with_preview(tiff: bytes, width: int = 1600, height: int = 1067,
+                           thumb: tuple[int, int] = (160, 106)) -> bytes:
+    """A raw-shaped file: EXIF-bearing TIFF, a small thumbnail, a large preview.
+
+    Mirrors how real raws are laid out, with more than one embedded JPEG, so the
+    extractor is tested on picking the largest rather than the first.
+    """
+    return (tiff
+            + build_sof_jpeg(thumb[0], thumb[1], 0x11)
+            + build_sof_jpeg(width, height, 0x80)
+            + b"\x00" * 512)
+
+
 def build_jpeg_with_exif(tiff: bytes) -> bytes:
     """SOI + APP1(Exif) + EOI — enough for metadata parsing."""
     payload = b"Exif\x00\x00" + tiff
@@ -249,7 +275,7 @@ def make_wedding(
                     flash=flash,
                     subsec=f"{i * 32 % 100:02d}",
                 )
-                (raw_dir / f"{name}.CR2").write_bytes(tiff)
+                (raw_dir / f"{name}.CR2").write_bytes(build_raw_with_preview(tiff))
 
                 if rng.random() < sidecar_share:
                     # Ratings track delivery, imperfectly.

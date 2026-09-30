@@ -21,7 +21,9 @@ built, and none should be until the numbers in the audit say it is worth it.
    and four explicit kill criteria. Written to be argued with.
 2. **[Data audit runbook](docs/01-data-audit-runbook.md)** — step-by-step
    procedure for auditing one wedding, then the whole archive.
-3. **[The two automators](docs/02-automators.md)** — the culling intake watcher
+3. **[Burst labelling](docs/04-burst-labelling.md)** — the sitting that produces
+   the Phase 1 dataset and the self-consistency number at the same time.
+4. **[The two automators](docs/02-automators.md)** — the culling intake watcher
    and the editorial submission checker, and why they are different problems.
 
 The three things worth knowing before reading either:
@@ -68,6 +70,10 @@ python3 -m mck snapshot --raw /path/RAW --out ./snapshots --tag post-review
 python3 -m mck diff --before ./snapshots/...post-ai \
                     --after  ./snapshots/...post-review \
                     --out    ./disagreements.jsonl
+
+# Pick winners among near-duplicate bursts, in a browser.
+# Produces the preference pairs and your self-consistency figure together.
+python3 -m mck label --raw /path/RAW
 
 # Find the keep/drop label in a Lightroom catalog (close Lightroom first)
 python3 -m mck catalog --lrcat /path/Catalog.lrcat
@@ -137,11 +143,13 @@ mckinley-ai/
     │   ├── bootstrap.py   one-shot drive + catalog reconnaissance
     │   ├── cullwatch.py   culling automator: intake watcher and pre-cull
     │   ├── editorial.py   editorial automator: specs, coverage, exclusivity
+    │   ├── preview.py     embedded JPEG preview extraction from raws
+    │   ├── labeler.py     burst labelling web app, decision log, consistency
     │   ├── xmpwrite.py    safe, backup-first sidecar writing
     │   └── cli.py         command-line interface
     └── tests/
         ├── make_fixtures.py   synthetic wedding generator
-        └── test_audit.py      39 tests
+        └── test_audit.py      45 tests
 ```
 
 ```bash
@@ -163,7 +171,7 @@ raw formats and export naming conventions.
 | Phase | Status |
 | --- | --- |
 | **0 — Data audit** | ✅ Toolkit built and tested. Awaiting a run on real data. |
-| 1 — Dataset creation | Blocked on Phase 0 numbers |
+| 1 — Dataset creation | ✅ Labelling tool built. Needs one sitting on a real wedding. |
 | 2 — Local culling prototype | Blocked on Phase 1 |
 | 3 — Human feedback loop | Design settled: frozen backbone + cached embeddings makes retraining near-instant |
 | 4 — Personalized editing | **Rescoped** — see feasibility study §6 |

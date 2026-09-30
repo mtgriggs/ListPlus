@@ -23,6 +23,7 @@ from .catalog import (
     read_extract, render_catalog_report, write_extract,
 )
 from .cullwatch import run_intake, watch_intake
+from .labeler import DecisionLog, prepare, render_summary, serve
 from .editorial import (
     PROFILES, SubmissionLedger, evaluate, load_wedding_meta, meta_template,
     render_submission,
@@ -207,6 +208,50 @@ def cmd_diff(args) -> int:
     print(f"  demoted     {result['demoted']:,}")
     if out_path:
         print(f"  written to  {out_path}")
+    return 0
+
+
+def cmd_label(args) -> int:
+    raw_roots = _paths(args.raw)
+    if not raw_roots:
+        print("error: --raw is required", file=sys.stderr)
+        return 2
+    missing = [p for p in raw_roots if not p.exists()]
+    if missing:
+        print(f"error: not found: {', '.join(str(m) for m in missing)}", file=sys.stderr)
+        return 2
+
+    out_path = Path(args.out).expanduser()
+    print("Scanning for bursts ...")
+    tasks, log = prepare(
+        raw_roots=raw_roots,
+        out_path=out_path,
+        mode=args.mode,
+        burst_gap=args.burst_gap,
+        prefer_exiftool=not args.no_exiftool,
+        limit=args.limit,
+    )
+
+    if args.summary:
+        print(render_summary(log.stats()))
+        return 0
+
+    if not tasks:
+        print("No bursts matched.", file=sys.stderr)
+        if args.mode == "decisive":
+            print("  --mode decisive needs bursts holding both a 4-or-5 and a 3.",
+                  file=sys.stderr)
+            print("  If this wedding was not culled with stars, try --mode all.",
+                  file=sys.stderr)
+        return 1
+
+    serve(tasks, log, port=args.port, max_edge=args.max_edge)
+    print()
+    print(render_summary(log.stats()))
+    summary_path = out_path.with_name(out_path.stem + "-summary.md")
+    summary_path.write_text(render_summary(log.stats()), encoding="utf-8")
+    print()
+    print(f"Summary written to {summary_path}")
     return 0
 
 
@@ -467,6 +512,25 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--after", required=True)
     d.add_argument("--out", help="output .json or .jsonl")
     d.set_defaults(func=cmd_diff)
+
+    lb = sub.add_parser("label",
+                        help="pick winners among near-duplicate bursts, in a browser")
+    lb.add_argument("--raw", action="append", required=True,
+                    help="folder of source frames (repeatable)")
+    lb.add_argument("--out", default="./labels/decisions.jsonl",
+                    help="decision log, appended to and resumable")
+    lb.add_argument("--mode", default="decisive", choices=["decisive", "all"],
+                    help="decisive: only bursts holding a 4-or-5 and a 3, so "
+                         "agreement can be measured. all: every multi-frame burst.")
+    lb.add_argument("--port", type=int, default=8765)
+    lb.add_argument("--burst-gap", type=float, default=2.0)
+    lb.add_argument("--max-edge", type=int, default=1400,
+                    help="preferred preview size in pixels")
+    lb.add_argument("--limit", type=int, help="only scan the first N frames")
+    lb.add_argument("--summary", action="store_true",
+                    help="print results so far and exit, without serving")
+    lb.add_argument("--no-exiftool", action="store_true")
+    lb.set_defaults(func=cmd_label)
 
     c = sub.add_parser("catalog", help="inspect a Lightroom .lrcat and extract labels")
     c.add_argument("--lrcat", required=True, help="path to the .lrcat (close Lightroom first)")

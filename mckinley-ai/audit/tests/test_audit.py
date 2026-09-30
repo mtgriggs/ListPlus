@@ -22,7 +22,8 @@ from mck.stats import auc, entropy                                # noqa: E402
 from mck.xmp import guess_writer, parse_xmp                       # noqa: E402
 
 from make_fixtures import (                                       # noqa: E402
-    build_jpeg_with_exif, build_tiff_exif, build_xmp, make_archive, make_wedding,
+    build_jpeg_with_exif, build_raw_with_preview, build_sof_jpeg, build_tiff_exif,
+    build_xmp, make_archive, make_wedding,
 )
 
 FAILURES: list[str] = []
@@ -1133,6 +1134,220 @@ def test_star_taxonomy(tmp: Path):
     check(empty["colors"] == {}, "no colours means an empty table")
 
 
+# --- preview extraction ---------------------------------------------------
+
+def test_preview_extraction(tmp: Path):
+    """Pick the largest embedded JPEG, not the first, and not a thumbnail."""
+    from mck.preview import extract_preview, find_jpeg_streams
+
+    tiff = build_tiff_exif(datetime(2025, 6, 14, 12, 0, 0), "Canon", "R5", "A",
+                           "RF50mm", 400, 2.0, 1 / 500, 50.0, False)
+    raw = tmp / "IMG_0001.CR2"
+    raw.write_bytes(build_raw_with_preview(tiff, width=1600, height=1067))
+
+    streams = find_jpeg_streams(raw.read_bytes())
+    check(len(streams) >= 1, f"should find embedded streams, got {len(streams)}")
+    check(streams[0][2] == 1600 and streams[0][3] == 1067,
+          f"largest stream should come first, got {streams[0][2]}x{streams[0][3]}")
+
+    result = extract_preview(raw)
+    check(result is not None, "preview should be extracted")
+    data, w, h = result
+    check((w, h) == (1600, 1067), f"wrong preview size: {w}x{h}")
+    check(data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"),
+          "extracted bytes should be a complete JPEG")
+
+    # The 160px thumbnail is below the floor and must never be returned.
+    check(all(min(s[2], s[3]) >= 400 for s in streams),
+          "thumbnails should be filtered out")
+
+    # max_edge should prefer the smallest stream that still clears the bar.
+    raw2 = tmp / "IMG_0002.CR2"
+    raw2.write_bytes(tiff + build_sof_jpeg(800, 600) + build_sof_jpeg(4000, 3000))
+    small = extract_preview(raw2, max_edge=700)
+    check(small is not None and small[1] == 800,
+          f"max_edge should pick the 800px stream, got {small and small[1]}")
+    big = extract_preview(raw2, max_edge=3000)
+    check(big is not None and big[1] == 4000,
+          f"a high max_edge should pick the 4000px stream, got {big and big[1]}")
+
+    # A file with no embedded JPEG must return None rather than raise.
+    bare = tmp / "bare.CR2"
+    bare.write_bytes(b"\x00" * 4096)
+    check(extract_preview(bare) is None, "no preview should yield None")
+    check(extract_preview(tmp / "missing.CR2") is None, "missing file should yield None")
+
+
+# --- burst labelling ------------------------------------------------------
+
+def test_label_task_building(tmp: Path):
+    from mck.labeler import build_tasks
+    from mck.exif import ExifRecord
+    from mck.scan import ImageRecord
+
+    def rec(stem, star, burst, epoch):
+        r = ImageRecord(path=Path(stem), stem=stem, ext=".cr2", size_bytes=1,
+                        exif=ExifRecord(capture_epoch=epoch))
+        r.burst_id = burst
+        r.xmp = type("X", (), {"rating": star, "label": None})()
+        return r
+
+    records = [
+        rec("a", 4, 0, 10.0), rec("b", 3, 0, 10.3), rec("c", 3, 0, 10.6),
+        rec("d", 3, 1, 50.0), rec("e", 3, 1, 50.3),          # no winner
+        rec("f", 5, 2, 90.0), rec("g", 3, 2, 90.3),
+        rec("h", 1, 3, 120.0),                               # single frame
+    ]
+
+    decisive = build_tasks(records, mode="decisive")
+    check([t.burst_id for t in decisive] == [0, 2],
+          f"only bursts with a winner and a loser, got {[t.burst_id for t in decisive]}")
+    check(decisive[0].original_winner == "a", "winner should be the highest rated")
+    check([f.stem for f in decisive[0].frames] == ["a", "b", "c"],
+          "frames should be in capture order")
+    check(len({f.index for t in decisive for f in t.frames}) == 5,
+          "frame indices must be unique across tasks")
+
+    every = build_tasks(records, mode="all")
+    check([t.burst_id for t in every] == [0, 1, 2],
+          f"'all' should keep every multi-frame burst, got {[t.burst_id for t in every]}")
+    check(every[1].original_winner is None,
+          "a burst with no 4-or-5 has no recorded winner")
+
+    check(decisive[0].as_json().get("original_winner") is None,
+          "the original pick must NOT be sent to the browser before a choice")
+
+
+def test_decision_log(tmp: Path):
+    from mck.labeler import DecisionLog
+
+    path = tmp / "decisions.jsonl"
+    log = DecisionLog(path)
+    check(log.stats()["decided"] == 0, "a fresh log is empty")
+    check(log.stats()["self_consistency"] is None, "no data means no consistency figure")
+
+    log.record({"burst_id": 1, "frames": ["a", "b", "c"], "chosen": "a",
+                "original": "a", "agreed": True, "skipped": False})
+    log.record({"burst_id": 2, "frames": ["d", "e"], "chosen": "e",
+                "original": "d", "agreed": False, "skipped": False})
+    log.record({"burst_id": 3, "frames": ["f", "g"], "chosen": None,
+                "original": "f", "agreed": False, "skipped": True})
+
+    st = log.stats()
+    check(st["decided"] == 2, f"two real decisions, got {st['decided']}")
+    check(st["skipped"] == 1, f"one skip, got {st['skipped']}")
+    check(st["agreed"] == 1, f"one agreement, got {st['agreed']}")
+    check(abs(st["self_consistency"] - 0.5) < 1e-9,
+          f"consistency should be 0.5, got {st['self_consistency']}")
+    check(st["preference_pairs"] == 3, f"2 + 1 pairs, got {st['preference_pairs']}")
+
+    # Reopening must resume, not restart.
+    again = DecisionLog(path)
+    check(len(again.done) == 3, f"log should reload 3 rows, got {len(again.done)}")
+    check(again.stats() == st, "reloaded stats should match")
+
+
+def test_label_server_round_trip(tmp: Path):
+    """Start the real server and drive it the way the browser does."""
+    import json as _json
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+    from mck.labeler import DecisionLog, _Handler, build_tasks, render_summary
+
+    info = make_wedding(tmp / "wedding", seed=131)
+    from mck.scan import scan_wedding
+    records, _ = scan_wedding(raw_roots=[info["raw"]], delivered_roots=[],
+                              prefer_exiftool=False)
+    tasks = build_tasks(records, mode="all")
+    check(len(tasks) > 0, "the fixture should yield bursts")
+
+    log = DecisionLog(tmp / "d.jsonl")
+    _Handler.tasks = tasks
+    _Handler.frames_by_index = {f.index: f for t in tasks for f in t.frames}
+    _Handler.log = log
+    _Handler.max_edge = 1400
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        page = urllib.request.urlopen(base + "/").read().decode()
+        check("Which one would you deliver?" in page, "the page should render")
+
+        d = _json.loads(urllib.request.urlopen(base + "/api/tasks").read())
+        check(len(d["tasks"]) == len(tasks), "all tasks pending initially")
+        check("original_winner" not in d["tasks"][0],
+              "the original pick must not leak to the browser")
+
+        idx = d["tasks"][0]["frames"][0]["index"]
+        img = urllib.request.urlopen(f"{base}/api/preview?i={idx}").read()
+        check(img.startswith(b"\xff\xd8"), "preview endpoint should return a JPEG")
+
+        bad = urllib.request.urlopen(f"{base}/api/preview?i=999999", timeout=5)
+        check(False, "an unknown frame index should 404")
+    except urllib.error.HTTPError as exc:
+        check(exc.code == 404, f"unknown index should 404, got {exc.code}")
+    except Exception as exc:  # noqa: BLE001
+        check(False, f"server round trip failed: {exc}")
+
+    try:
+        task = tasks[0]
+        body = _json.dumps({"burst_id": task.burst_id,
+                            "chosen": task.frames[-1].stem}).encode()
+        req = urllib.request.Request(base + "/api/choose", data=body,
+                                     headers={"Content-Type": "application/json"})
+        res = _json.loads(urllib.request.urlopen(req).read())
+        check(res["stats"]["decided"] == 1, "the choice should be recorded")
+        check("original" in res, "the original pick is revealed only after choosing")
+
+        # A frame that is not in this burst must be rejected.
+        bad_body = _json.dumps({"burst_id": task.burst_id, "chosen": "nope"}).encode()
+        bad_req = urllib.request.Request(base + "/api/choose", data=bad_body,
+                                         headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(bad_req)
+            check(False, "an out-of-burst frame should be rejected")
+        except urllib.error.HTTPError as exc:
+            check(exc.code == 400, f"expected 400, got {exc.code}")
+
+        pending = _json.loads(urllib.request.urlopen(base + "/api/tasks").read())
+        check(len(pending["tasks"]) == len(tasks) - 1,
+              "a decided burst should drop out of the queue")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    check((tmp / "d.jsonl").exists(), "decisions should be on disk immediately")
+    summary = render_summary(log.stats())
+    check("Burst labelling results" in summary, "summary should render")
+    check("Preference pairs generated" in summary, "summary should count pairs")
+
+
+def test_label_summary_thresholds():
+    from mck.labeler import render_summary
+
+    low = render_summary({"decided": 100, "skipped": 0, "comparable": 100,
+                          "agreed": 50, "self_consistency": 0.5,
+                          "preference_pairs": 300})
+    check("closer to arbitrary" in low, "a low score should say what it means")
+
+    mid = render_summary({"decided": 100, "skipped": 0, "comparable": 100,
+                          "agreed": 72, "self_consistency": 0.72,
+                          "preference_pairs": 300})
+    check("human parity" in mid, "a mid score should set the target")
+
+    high = render_summary({"decided": 100, "skipped": 0, "comparable": 100,
+                           "agreed": 88, "self_consistency": 0.88,
+                           "preference_pairs": 300})
+    check("consistent rule" in high, "a high score should say so")
+
+    none = render_summary({"decided": 5, "skipped": 0, "comparable": 0, "agreed": 0,
+                           "self_consistency": None, "preference_pairs": 10})
+    check("could not be measured" in none, "no comparable bursts should be explained")
+
+
 # --- runner ---------------------------------------------------------------
 
 def run_all():
@@ -1156,6 +1371,8 @@ def run_all():
         test_editorial_exclusivity, test_editorial_cli,
         test_discover_survey, test_discover_cli,
         test_bootstrap, test_bootstrap_cli, test_star_taxonomy,
+        test_preview_extraction, test_label_task_building, test_decision_log,
+        test_label_server_round_trip, test_label_summary_thresholds,
     ]
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
