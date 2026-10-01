@@ -1524,6 +1524,35 @@ def test_recommend_first_sitting():
     check("--burst-gap" in none_text, "suggesting what to try next")
 
 
+def test_tilde_prefixed_folder_names(tmp: Path):
+    """Folders named ~Something must not be read as a username."""
+    from mck.cli import _path, main
+
+    # The real failure: Path("~Wedding Catalog").expanduser() raises RuntimeError.
+    check(str(_path("~Wedding Catalog")) == "~Wedding Catalog",
+          "a ~-prefixed folder name must survive unchanged")
+    check(str(_path("/Volumes/The Beast/~Wedding Catalog"))
+          == "/Volumes/The Beast/~Wedding Catalog",
+          "a ~ inside an absolute path must survive unchanged")
+    check(str(_path("~/Sandbox")).endswith("/Sandbox"), "~/ must still expand to home")
+    check(_path("~") == Path("~").expanduser(), "a bare ~ must still expand")
+
+    # End to end: an archive whose folders all start with ~, like the real drive.
+    archive = tmp / "Beast"
+    make_wedding(archive / "~Wedding Catalog", seed=161)
+    out = tmp / "labels" / "decisions.jsonl"
+    code = main(["label", "--archive", str(archive), "--out", str(out),
+                 "--mode", "all", "--no-exiftool"])
+    check(code == 0, f"a ~-named wedding folder should survey cleanly, got {code}")
+
+    text = (tmp / "labels" / "LABELLING-SURVEY.md").read_text(encoding="utf-8")
+    check("~Wedding Catalog" in text, "and appear in the report by name")
+
+    code = main(["label", "--archive", str(archive), "--out", str(out),
+                 "--wedding", "~Wedding Catalog", "--summary", "--no-exiftool"])
+    check(code == 0, f"selecting it by its ~ name should work, got {code}")
+
+
 # --- runner ---------------------------------------------------------------
 
 def run_all():
@@ -1551,7 +1580,7 @@ def run_all():
         test_label_server_round_trip, test_label_summary_thresholds,
         test_label_archive_discovery, test_survey_samples_the_largest,
         test_label_cli_archive,
-        test_recommend_first_sitting,
+        test_recommend_first_sitting, test_tilde_prefixed_folder_names,
     ]
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)

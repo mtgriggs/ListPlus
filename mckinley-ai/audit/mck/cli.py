@@ -36,8 +36,21 @@ from .scan import scan_wedding
 from .snapshot import diff_snapshots, take_snapshot
 
 
+def _path(value: str) -> Path:
+    """Path, expanding a leading ~ only when it really means a home directory.
+
+    Folders whose names start with ~ are common in a photo archive (~Wedding
+    Catalog, ~Branding), and `Path.expanduser()` reads those as a username and
+    raises RuntimeError. Expanding only `~` and `~/...` keeps home shortcuts
+    working while leaving such folder names alone.
+    """
+    if value == "~" or value.startswith("~/"):
+        return Path(value).expanduser()
+    return Path(value)
+
+
 def _paths(values: list[str] | None) -> list[Path]:
-    return [Path(v).expanduser() for v in (values or [])]
+    return [_path(v) for v in (values or [])]
 
 
 def cmd_scan(args) -> int:
@@ -54,7 +67,7 @@ def cmd_scan(args) -> int:
 
     label_stems = None
     if args.labels:
-        labels_path = Path(args.labels).expanduser()
+        labels_path = _path(args.labels)
         if not labels_path.exists():
             print(f"error: labels file not found: {labels_path}", file=sys.stderr)
             return 2
@@ -93,7 +106,7 @@ def cmd_scan(args) -> int:
         print("error: no image files found under the given --raw path(s)", file=sys.stderr)
         return 1
 
-    out_dir = Path(args.out).expanduser()
+    out_dir = _path(args.out)
     payload = write_reports(records, meta, out_dir, title=title)
 
     a = payload["analysis"]
@@ -114,7 +127,7 @@ def cmd_scan(args) -> int:
 
 
 def cmd_bootstrap(args) -> int:
-    out_dir = Path(args.out).expanduser()
+    out_dir = _path(args.out)
     payload = _bootstrap.run(
         out_dir=out_dir,
         archives=_paths(args.archive) or None,
@@ -137,7 +150,7 @@ def cmd_bootstrap(args) -> int:
 
 
 def cmd_discover(args) -> int:
-    archive = Path(args.archive).expanduser()
+    archive = _path(args.archive)
     survey = survey_archive(
         archive,
         raw_names=args.raw_names.split(",") if args.raw_names else None,
@@ -154,8 +167,8 @@ def cmd_discover(args) -> int:
 
 
 def cmd_auto(args) -> int:
-    archive = Path(args.archive).expanduser()
-    out_dir = Path(args.out).expanduser()
+    archive = _path(args.archive)
+    out_dir = _path(args.out)
     if not archive.exists():
         print(f"error: archive not found: {archive}", file=sys.stderr)
         return 2
@@ -182,7 +195,7 @@ def cmd_snapshot(args) -> int:
         return 2
     result = take_snapshot(
         roots=roots,
-        out_dir=Path(args.out).expanduser(),
+        out_dir=_path(args.out),
         tag=args.tag,
         copy_files=not args.no_copy,
     )
@@ -194,14 +207,14 @@ def cmd_snapshot(args) -> int:
 
 
 def cmd_diff(args) -> int:
-    before = Path(args.before).expanduser()
-    after = Path(args.after).expanduser()
+    before = _path(args.before)
+    after = _path(args.after)
     for p in (before, after):
         if not p.exists():
             print(f"error: snapshot not found: {p}", file=sys.stderr)
             return 2
 
-    out_path = Path(args.out).expanduser() if args.out else None
+    out_path = _path(args.out) if args.out else None
     result = diff_snapshots(before, after, out_path)
 
     print(f"  {result['before']['tag']} -> {result['after']['tag']}")
@@ -219,7 +232,7 @@ def cmd_label(args) -> int:
 
     # Archive mode: find the weddings by looking for raws, not by folder name.
     if args.archive:
-        archive = Path(args.archive).expanduser()
+        archive = _path(args.archive)
         if not archive.exists():
             print(f"error: archive not found: {archive}", file=sys.stderr)
             return 2
@@ -262,7 +275,7 @@ def cmd_label(args) -> int:
             )
             survey["archive"] = str(archive)
             text = render_survey_labelling(survey)
-            out_dir = Path(args.out).expanduser().parent
+            out_dir = _path(args.out).parent
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / "LABELLING-SURVEY.md").write_text(text, encoding="utf-8")
             print()
@@ -281,7 +294,7 @@ def cmd_label(args) -> int:
         print(f"error: not found: {', '.join(str(m) for m in missing)}", file=sys.stderr)
         return 2
 
-    out_path = Path(args.out).expanduser()
+    out_path = _path(args.out)
     print("Scanning for bursts ...")
     tasks, log = prepare(
         raw_roots=raw_roots,
@@ -316,7 +329,7 @@ def cmd_label(args) -> int:
 
 
 def cmd_catalog(args) -> int:
-    lrcat = Path(args.lrcat).expanduser()
+    lrcat = _path(args.lrcat)
     if not lrcat.exists():
         print(f"error: catalog not found: {lrcat}", file=sys.stderr)
         return 2
@@ -330,7 +343,7 @@ def cmd_catalog(args) -> int:
             print(f"error: could not read catalog: {exc}", file=sys.stderr)
             print("Make sure Lightroom is closed.", file=sys.stderr)
             return 1
-        out_path = Path(args.extract).expanduser()
+        out_path = _path(args.extract)
         write_extract(rows, out_path)
         print(f"Extracted {len(rows):,} image rows -> {out_path}")
         if rows:
@@ -355,7 +368,7 @@ def cmd_catalog(args) -> int:
 
     text = render_catalog_report(result)
     if args.out:
-        out_path = Path(args.out).expanduser()
+        out_path = _path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(text, encoding="utf-8")
         print(f"Report written to {out_path}")
@@ -364,8 +377,8 @@ def cmd_catalog(args) -> int:
 
 
 def cmd_cull(args) -> int:
-    intake = Path(args.intake).expanduser()
-    out_dir = Path(args.out).expanduser()
+    intake = _path(args.intake)
+    out_dir = _path(args.out)
     if not intake.exists():
         print(f"error: intake folder not found: {intake}", file=sys.stderr)
         return 2
@@ -389,7 +402,7 @@ def cmd_cull(args) -> int:
 
 
 def cmd_editorial(args) -> int:
-    out_dir = Path(args.out).expanduser()
+    out_dir = _path(args.out)
     ledger = SubmissionLedger(out_dir / "submissions.json")
 
     if args.action == "profiles":
