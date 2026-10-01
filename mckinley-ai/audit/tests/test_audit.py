@@ -1425,6 +1425,66 @@ def test_label_cli_archive(tmp: Path):
     check(code == 2, "neither --raw nor --archive should exit 2")
 
 
+def test_recommend_first_sitting():
+    """The survey should name the wedding to start with, and justify it."""
+    from datetime import date, timedelta
+    from mck.labeler import recommend_first_sitting, render_survey_labelling
+
+    old = (date.today() - timedelta(days=500)).isoformat()
+    recent = (date.today() - timedelta(days=20)).isoformat()
+
+    rows = [
+        # Too few recorded picks to measure anything.
+        {"name": "Tiny", "frames": 200, "bursts": 10, "pairs": 20,
+         "with_recorded_pick": 5, "shot_on": old},
+        # Right size, but shot last month: would measure memory, not taste.
+        {"name": "Recent", "frames": 4000, "bursts": 200, "pairs": 700,
+         "with_recorded_pick": 200, "shot_on": recent},
+        # Old and comfortably sized: the right answer.
+        {"name": "Patterson", "frames": 4200, "bursts": 210, "pairs": 760,
+         "with_recorded_pick": 210, "shot_on": old},
+        {"name": "Broken", "frames": 100, "error": "unreadable", "bursts": 0,
+         "pairs": 0},
+    ]
+
+    pick = recommend_first_sitting(rows)
+    check(pick is not None, "a recommendation should be made")
+    check(pick["name"] == "Patterson", f"wrong pick: {pick['name']}")
+    check(any("months ago" in r for r in pick["why"]), f"age should be cited: {pick['why']}")
+    check(any("hour of clicking" in r for r in pick["why"]),
+          f"size should be cited: {pick['why']}")
+
+    # Nothing usable should say so rather than recommending junk.
+    check(recommend_first_sitting([rows[0], rows[3]]) is None,
+          "too-few-picks weddings should yield no recommendation")
+    check(recommend_first_sitting([]) is None, "an empty survey yields nothing")
+
+    # A malformed date must not crash the scorer.
+    odd = recommend_first_sitting([{**rows[2], "shot_on": "not-a-date"}])
+    check(odd is not None, "an unparseable date should still be recommendable")
+    check(any("age could not be checked" in r for r in odd["why"]),
+          f"and should say why: {odd['why']}")
+
+    text = render_survey_labelling({
+        "mode": "decisive", "weddings": rows, "total_weddings": 4,
+        "total_frames": 8500, "total_bursts": 420, "total_pairs": 1480,
+        "total_with_recorded_pick": 415, "archive": "/Volumes/The Beast",
+    })
+    check("Start with this one" in text, "the report should lead with the pick")
+    check("--wedding \"Patterson\"" in text, "and give a pasteable command")
+    check("/Volumes/The Beast" in text, "using the real archive path")
+    check("Every wedding counted" in text, "the full table should still be there")
+
+    none_text = render_survey_labelling({
+        "mode": "decisive", "weddings": [rows[0]], "total_weddings": 1,
+        "total_frames": 200, "total_bursts": 10, "total_pairs": 20,
+        "total_with_recorded_pick": 5,
+    })
+    check("No wedding is a good first sitting" in none_text,
+          "and should explain when nothing qualifies")
+    check("--burst-gap" in none_text, "suggesting what to try next")
+
+
 # --- runner ---------------------------------------------------------------
 
 def run_all():
@@ -1451,6 +1511,7 @@ def run_all():
         test_preview_extraction, test_label_task_building, test_decision_log,
         test_label_server_round_trip, test_label_summary_thresholds,
         test_label_archive_discovery, test_label_cli_archive,
+        test_recommend_first_sitting,
     ]
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)

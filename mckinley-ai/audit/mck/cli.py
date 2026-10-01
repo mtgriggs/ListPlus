@@ -260,6 +260,7 @@ def cmd_label(args) -> int:
                 prefer_exiftool=not args.no_exiftool,
                 limit=args.limit_weddings,
             )
+            survey["archive"] = str(archive)
             text = render_survey_labelling(survey)
             out_dir = Path(args.out).expanduser().parent
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -269,7 +270,6 @@ def cmd_label(args) -> int:
             print()
             print(f"Written to {out_dir / 'LABELLING-SURVEY.md'}")
             print()
-            print("To label one wedding, add --wedding with part of its folder name.")
             return 0
 
     if not raw_roots:

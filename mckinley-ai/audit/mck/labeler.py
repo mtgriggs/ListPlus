@@ -207,12 +207,15 @@ def survey_labelling(
             log(f"  {wedding['name']}: failed ({exc})")
             continue
         pairs = sum(max(0, len(t.frames) - 1) for t in tasks)
+        stamps = sorted(f.capture_time for t in tasks for f in t.frames
+                        if f.capture_time)
         rows.append({
             "name": wedding["name"],
             "frames": wedding["raw_count"],
             "bursts": len(tasks),
             "pairs": pairs,
             "with_recorded_pick": sum(1 for t in tasks if t.original_winner),
+            "shot_on": stamps[0][:10] if stamps else None,
         })
         log(f"  [{n}/{total}] {wedding['name']}: {len(tasks):,} bursts, {pairs:,} pairs")
 
@@ -228,6 +231,75 @@ def survey_labelling(
         "total_pairs": sum(r["pairs"] for r in rows),
         "total_with_recorded_pick": sum(r.get("with_recorded_pick", 0) for r in rows),
     }
+
+
+# A first sitting wants enough decisions to measure agreement, but not so many
+# that it becomes a slog nobody finishes.
+MIN_BURSTS_TO_MEASURE = 25
+IDEAL_BURSTS = (80, 400)
+MIN_AGE_DAYS = 180
+
+
+def recommend_first_sitting(rows: list[dict]) -> dict | None:
+    """Pick the wedding to label first, and say why.
+
+    Three things matter, in order. It must carry enough bursts with a recorded
+    pick to measure agreement at all. It must be old enough that the frames are
+    not remembered, or the figure measures memory rather than taste. And it
+    should be a comfortable size, because the sitting that gets finished is
+    worth more than the thorough one that gets abandoned.
+    """
+    today = datetime.now().date()
+    scored: list[tuple[float, dict, list[str]]] = []
+
+    for row in rows:
+        if row.get("error"):
+            continue
+        usable = row.get("with_recorded_pick", 0)
+        if usable < MIN_BURSTS_TO_MEASURE:
+            continue
+
+        reasons: list[str] = []
+        score = 0.0
+
+        age_days = None
+        if row.get("shot_on"):
+            try:
+                shot = datetime.fromisoformat(row["shot_on"]).date()
+                age_days = (today - shot).days
+            except ValueError:
+                age_days = None
+
+        if age_days is None:
+            score += 10
+            reasons.append("no capture date, so age could not be checked")
+        elif age_days >= MIN_AGE_DAYS:
+            score += 40 + min(30.0, age_days / 60.0)
+            months = age_days // 30
+            reasons.append(f"shot {months} months ago, long enough that you will "
+                           "not remember the frames")
+        else:
+            score += age_days / 10.0
+            reasons.append(f"only {age_days} days old, so you may still remember it")
+
+        bursts = row["bursts"]
+        if IDEAL_BURSTS[0] <= bursts <= IDEAL_BURSTS[1]:
+            score += 30
+            reasons.append(f"{bursts:,} bursts is about an hour of clicking")
+        elif bursts < IDEAL_BURSTS[0]:
+            score += 10
+            reasons.append(f"only {bursts:,} bursts, so the figure will be rough")
+        else:
+            score += 15
+            reasons.append(f"{bursts:,} bursts is a long sitting; you can stop "
+                           "early and it resumes")
+
+        scored.append((score, row, reasons))
+
+    if not scored:
+        return None
+    score, row, reasons = max(scored, key=lambda t: t[0])
+    return {**row, "why": reasons}
 
 
 def render_survey_labelling(s: dict) -> str:
@@ -257,13 +329,40 @@ def render_survey_labelling(s: dict) -> str:
           f"**{hours:.1f} hours**. You do not need all of it: one wedding gives the "
           "self-consistency figure, and a handful gives a usable first dataset.")
         w("")
-    w("| Wedding | Frames | Bursts | Pairs |")
-    w("| --- | --- | --- | --- |")
+    pick = recommend_first_sitting(s["weddings"])
+    if pick:
+        w("## Start with this one")
+        w("")
+        w(f"**{pick['name']}** — {pick['bursts']:,} bursts, {pick['pairs']:,} pairs"
+          + (f", shot {pick['shot_on']}" if pick.get("shot_on") else ""))
+        w("")
+        w("```")
+        w(f'python3 -m mck label --archive "{s.get("archive", "/Volumes/The Beast")}" \\')
+        w(f'    --wedding "{pick["name"]}"')
+        w("```")
+        w("")
+        for reason in pick["why"]:
+            w(f"- {reason}")
+        w("")
+    else:
+        w("## No wedding is a good first sitting")
+        w("")
+        w(f"None carried at least {MIN_BURSTS_TO_MEASURE} bursts with a recorded "
+          "pick, which is the minimum for a meaningful agreement figure. Either "
+          "the sample was too small, or `--burst-gap` is splitting bursts too "
+          "finely. Try `--limit-weddings 25`, or `--burst-gap 4`.")
+        w("")
+
+    w("## Every wedding counted")
+    w("")
+    w("| Wedding | Shot | Frames | Bursts | Pairs |")
+    w("| --- | --- | --- | --- | --- |")
     for r in sorted(s["weddings"], key=lambda r: -r["bursts"])[:40]:
         if r.get("error"):
-            w(f"| {r['name']} | {r['frames']:,} | failed | {r['error'][:40]} |")
+            w(f"| {r['name']} | | {r['frames']:,} | failed | {r['error'][:40]} |")
         else:
-            w(f"| {r['name']} | {r['frames']:,} | {r['bursts']:,} | {r['pairs']:,} |")
+            w(f"| {r['name']} | {r.get('shot_on') or ''} | {r['frames']:,} | "
+              f"{r['bursts']:,} | {r['pairs']:,} |")
     return "\n".join(lines)
 
 
