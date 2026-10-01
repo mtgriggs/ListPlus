@@ -144,6 +144,41 @@ Two ways to get that data, and they are complementary:
   rate, and doubles as the §2 self-consistency test, because agreement with the
   original pick *is* the self-consistency number.
 
+### 3.1c First real measurement, 1 October 2026
+
+`mck label --archive "/Volumes/The Beast/~Wedding Catalog" --limit-weddings 10`
+against the real archive, replacing the estimates in §4:
+
+| | Measured |
+| --- | --- |
+| Weddings in `~Wedding Catalog` | 10 |
+| Source frames | 12,717 |
+| Bursts carrying a recorded pick | 928 |
+| **Preference pairs available** | **2,773** |
+| Labelling time for all of it | ~3.7 hours |
+
+**My per-wedding estimate in §4 was about 2.5x too high.** I guessed 1,500 to
+3,000 pairs from a 4,000-frame wedding; the real rate is closer to **one pair
+per three frames** (Nina & Mikey: 2,131 frames, 689 pairs). The total is still
+a usable dataset, but it accumulates more slowly than §4 implies and the
+archive-wide figure should be recomputed from this rate, not from that estimate.
+
+Three things the numbers raise:
+
+1. **Frame counts look post-cull.** 2,131 frames for a full wedding day is low;
+   a full take is usually 3,000 to 6,000. These folders most likely hold the
+   survivors and their 3-star duplicates rather than the whole shoot. That does
+   not hurt the burst ranker, which only ever compares near-identical
+   candidates, but it means the archive cannot be used to train the
+   outright-rejection stage. That stage stays generic, which §1 already assumed.
+2. **Only 10 weddings are in this folder.** `~Wedding Catalog Second` and
+   `_Archive` hold the rest and have not been surveyed.
+3. **Two large folders contribute nothing.** Abby & Ethan (2,782 frames) and
+   Kayla & Wayne (773) yield zero bursts and report no capture date. Either
+   their sidecars are missing, their ratings do not use the 3-for-duplicate
+   convention, or the raw format defeats the EXIF reader. Abby & Ethan is the
+   single largest folder in the archive, so it is worth diagnosing.
+
 ### 3.1b Where the value may actually be now
 
 If Aftershoot already fits the cull well, the headroom there is thin, and the
