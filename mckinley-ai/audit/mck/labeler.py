@@ -175,6 +175,7 @@ def survey_labelling(
     mode: str = "decisive",
     burst_gap: float = 2.0,
     prefer_exiftool: bool = True,
+    limit: int | None = None,
     log=print,
 ) -> dict:
     """Count the decisions waiting across an archive, without labelling anything.
@@ -183,21 +184,30 @@ def survey_labelling(
     the eventual dataset can get, before committing an afternoon to it.
     """
     rows = []
-    for wedding in weddings:
+    selected = weddings[:limit] if limit else weddings
+    total = len(selected)
+    sampled = len(selected) < len(weddings)
+
+    for n, wedding in enumerate(selected, start=1):
         try:
             tasks, _ = prepare(
                 raw_roots=[Path(p) for p in wedding["raw_folders"]],
-                out_path=Path("/dev/null"),
+                out_path=None,
                 mode=mode,
                 burst_gap=burst_gap,
                 prefer_exiftool=prefer_exiftool,
             )
+        except KeyboardInterrupt:
+            log("")
+            log(f"  Stopped after {n - 1} of {total}. Reporting what was counted.")
+            break
         except Exception as exc:  # noqa: BLE001 - a bad wedding must not stop the survey
             rows.append({"name": wedding["name"], "error": str(exc),
                          "bursts": 0, "pairs": 0, "frames": wedding["raw_count"]})
             log(f"  {wedding['name']}: failed ({exc})")
             continue
         pairs = sum(max(0, len(t.frames) - 1) for t in tasks)
+        log(f"  [{n}/{total}] ", end="") if False else None
         rows.append({
             "name": wedding["name"],
             "frames": wedding["raw_count"],
@@ -205,10 +215,13 @@ def survey_labelling(
             "pairs": pairs,
             "with_recorded_pick": sum(1 for t in tasks if t.original_winner),
         })
-        log(f"  {wedding['name']}: {len(tasks):,} bursts, {pairs:,} pairs")
+        log(f"  [{n}/{total}] {wedding['name']}: {len(tasks):,} bursts, {pairs:,} pairs")
 
     return {
         "mode": mode,
+        "sampled": sampled or len(rows) < total,
+        "surveyed": len(rows),
+        "available": len(weddings),
         "weddings": rows,
         "total_weddings": len(rows),
         "total_frames": sum(r["frames"] for r in rows),
@@ -233,6 +246,12 @@ def render_survey_labelling(s: dict) -> str:
     w(f"| With a recorded pick | {s['total_with_recorded_pick']:,} |")
     w(f"| **Preference pairs available** | **{s['total_pairs']:,}** |")
     w("")
+    if s.get("sampled"):
+        w(f"> Counted {s['surveyed']} of {s['available']} weddings. "
+          f"Scaling by {s['available'] / max(1, s['surveyed']):.1f}x suggests roughly "
+          f"**{int(s['total_pairs'] * s['available'] / max(1, s['surveyed'])):,} pairs** "
+          "across the whole archive, give or take how typical the sample was.")
+        w("")
     if s["total_bursts"]:
         hours = s["total_bursts"] / 250.0
         w(f"At roughly 250 bursts an hour, labelling everything is about "
@@ -553,7 +572,7 @@ def serve(
 
 def prepare(
     raw_roots: list[Path],
-    out_path: Path,
+    out_path: Path | None = None,
     mode: str = "decisive",
     burst_gap: float = 2.0,
     prefer_exiftool: bool = True,
@@ -568,7 +587,7 @@ def prepare(
         limit=limit,
     )
     tasks = build_tasks(records, mode=mode)
-    return tasks, DecisionLog(out_path)
+    return tasks, (DecisionLog(out_path) if out_path else None)
 
 
 def render_summary(stats: dict) -> str:

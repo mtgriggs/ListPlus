@@ -1382,6 +1382,16 @@ def test_label_archive_discovery(tmp: Path):
     check(survey["total_pairs"] > 0, "and preference pairs")
     check(survey["total_frames"] == smith["raw_count"] + 2, "frame counts should sum")
 
+    check(survey["sampled"] is False, "a full survey is not a sample")
+    check(survey["surveyed"] == 2 and survey["available"] == 2, "counts should agree")
+
+    sample = survey_labelling(found, mode="all", prefer_exiftool=False, limit=1,
+                              log=lambda *_: None)
+    check(sample["sampled"] is True, "a limited survey should mark itself sampled")
+    check(sample["surveyed"] == 1, "only one wedding should be counted")
+    sample_text = render_survey_labelling(sample)
+    check("Scaling by" in sample_text, "a sample should extrapolate, and say it is doing so")
+
     text = render_survey_labelling(survey)
     check("Preference pairs available" in text, "survey should headline the pair count")
     check("hours" in text, "survey should estimate the effort")

@@ -249,9 +249,16 @@ def cmd_label(args) -> int:
             raw_roots = [Path(p) for p in matches[0]["raw_folders"]]
             print(f"Selected: {matches[0]['name']}")
         else:
+            if not args.limit_weddings and len(weddings) > 12:
+                print(f"Note: counting all {len(weddings)} weddings reads EXIF for every")
+                print("      frame on the drive, which can take a long time over USB.")
+                print("      Ctrl-C stops it and reports what was counted, or use")
+                print("      --limit-weddings 10 to sample.")
+                print()
             survey = survey_labelling(
                 weddings, mode=args.mode, burst_gap=args.burst_gap,
                 prefer_exiftool=not args.no_exiftool,
+                limit=args.limit_weddings,
             )
             text = render_survey_labelling(survey)
             out_dir = Path(args.out).expanduser().parent
@@ -585,6 +592,8 @@ def build_parser() -> argparse.ArgumentParser:
     lb.add_argument("--max-edge", type=int, default=1400,
                     help="preferred preview size in pixels")
     lb.add_argument("--limit", type=int, help="only scan the first N frames")
+    lb.add_argument("--limit-weddings", type=int,
+                    help="survey only the first N weddings, and extrapolate")
     lb.add_argument("--summary", action="store_true",
                     help="print results so far and exit, without serving")
     lb.add_argument("--no-exiftool", action="store_true")
