@@ -658,6 +658,33 @@ class _Handler(BaseHTTPRequestHandler):
         })
 
 
+# EADDRINUSE: 48 on macOS and BSD, 98 on Linux.
+ADDRESS_IN_USE = (48, 98)
+PORT_SCAN_ATTEMPTS = 20
+
+
+def bind_server(port: int, attempts: int = PORT_SCAN_ATTEMPTS) -> ThreadingHTTPServer:
+    """Bind to the requested port, or the next free one above it.
+
+    A leftover labelling server from an earlier sitting holds its port, and the
+    bare OSError that produces is a traceback rather than an explanation. Since
+    the port number carries no meaning to anyone, moving up to a free one is
+    strictly better than failing.
+    """
+    last: OSError | None = None
+    for candidate in range(port, port + attempts):
+        try:
+            return ThreadingHTTPServer(("127.0.0.1", candidate), _Handler)
+        except OSError as exc:
+            if exc.errno not in ADDRESS_IN_USE:
+                raise
+            last = exc
+    raise OSError(
+        f"ports {port}-{port + attempts - 1} are all in use. An earlier labelling "
+        f"server is probably still running: `lsof -ti:{port} | xargs kill` clears it."
+    ) from last
+
+
 def serve(
     tasks: list[BurstTask],
     log: DecisionLog,
@@ -671,11 +698,14 @@ def serve(
     _Handler.max_edge = max_edge
 
     pending = sum(1 for t in tasks if t.burst_id not in log.done)
-    server = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
+    server = bind_server(port)
+    actual_port = server.server_address[1]
+    if actual_port != port:
+        log_fn(f"  port {port} was busy, using {actual_port} instead")
     log_fn(f"  {len(tasks):,} bursts, {pending:,} still to decide")
     log_fn(f"  decisions append to {log.path}")
     log_fn("")
-    log_fn(f"  Open http://127.0.0.1:{port}/  (Ctrl-C when you are done)")
+    log_fn(f"  Open http://127.0.0.1:{actual_port}/  (Ctrl-C when you are done)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

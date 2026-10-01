@@ -1553,6 +1553,35 @@ def test_tilde_prefixed_folder_names(tmp: Path):
     check(code == 0, f"selecting it by its ~ name should work, got {code}")
 
 
+def test_port_already_in_use(tmp: Path):
+    """A busy port should move up, not raise a traceback."""
+    from http.server import ThreadingHTTPServer
+    from mck.labeler import _Handler, bind_server
+
+    # Hold a port the way a leftover labelling server would.
+    blocker = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    taken = blocker.server_address[1]
+    try:
+        server = bind_server(taken)
+        try:
+            check(server.server_address[1] != taken,
+                  "a busy port should be stepped over")
+            check(taken < server.server_address[1] <= taken + 20,
+                  f"and the next free one used, got {server.server_address[1]}")
+        finally:
+            server.server_close()
+
+        # No room at all should explain itself, not raise a bare OSError.
+        try:
+            bind_server(taken, attempts=1)
+            check(False, "an exhausted range should raise")
+        except OSError as exc:
+            check("lsof" in str(exc),
+                  f"the error should name the fix, got: {exc}")
+    finally:
+        blocker.server_close()
+
+
 # --- runner ---------------------------------------------------------------
 
 def run_all():
@@ -1578,6 +1607,7 @@ def run_all():
         test_bootstrap, test_bootstrap_cli, test_star_taxonomy,
         test_preview_extraction, test_label_task_building, test_decision_log,
         test_label_server_round_trip, test_label_summary_thresholds,
+        test_port_already_in_use,
         test_label_archive_discovery, test_survey_samples_the_largest,
         test_label_cli_archive,
         test_recommend_first_sitting, test_tilde_prefixed_folder_names,
