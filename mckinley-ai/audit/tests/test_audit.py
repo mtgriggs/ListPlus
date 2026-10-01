@@ -1348,6 +1348,73 @@ def test_label_summary_thresholds():
     check("could not be measured" in none, "no comparable bursts should be explained")
 
 
+def test_label_archive_discovery(tmp: Path):
+    """Weddings are found by containing raws, not by folder naming."""
+    from mck.labeler import find_wedding_folders, render_survey_labelling, survey_labelling
+
+    archive = tmp / "Beast"
+    make_wedding(archive / "2025-06-14 Smith", seed=141)
+    # Deliberately unconventional naming, and nested a level deeper.
+    odd = archive / "2024-09-21 Alvarez" / "CR3 Files" / "Card A"
+    odd.mkdir(parents=True)
+    (odd / "IMG_1.CR2").write_bytes(b"x")
+    (odd / "IMG_2.CR2").write_bytes(b"x")
+    # A folder with no raws at all must not be mistaken for a wedding.
+    (archive / "Invoices").mkdir()
+    (archive / "Invoices" / "note.txt").write_text("not a wedding", encoding="utf-8")
+
+    found = find_wedding_folders(archive)
+    names = {w["name"] for w in found}
+    check(names == {"2025-06-14 Smith", "2024-09-21 Alvarez"},
+          f"discovery should ignore naming and skip non-weddings, got {names}")
+
+    alvarez = next(w for w in found if w["name"] == "2024-09-21 Alvarez")
+    check(alvarez["raw_count"] == 2, f"should count nested raws, got {alvarez['raw_count']}")
+    check(len(alvarez["raw_folders"]) == 1, "should record the folder holding them")
+
+    smith = next(w for w in found if w["name"] == "2025-06-14 Smith")
+    check(smith["raw_count"] > 100, f"fixture wedding should be large, got {smith['raw_count']}")
+
+    survey = survey_labelling(found, mode="all", prefer_exiftool=False,
+                              log=lambda *_: None)
+    check(survey["total_weddings"] == 2, "both weddings should be surveyed")
+    check(survey["total_bursts"] > 0, "the fixture should contribute bursts")
+    check(survey["total_pairs"] > 0, "and preference pairs")
+    check(survey["total_frames"] == smith["raw_count"] + 2, "frame counts should sum")
+
+    text = render_survey_labelling(survey)
+    check("Preference pairs available" in text, "survey should headline the pair count")
+    check("hours" in text, "survey should estimate the effort")
+    check("2025-06-14 Smith" in text, "per-wedding rows should appear")
+
+    check(find_wedding_folders(tmp / "nope") == [], "a missing archive yields nothing")
+
+
+def test_label_cli_archive(tmp: Path):
+    from mck.cli import main
+
+    archive = tmp / "Beast"
+    make_wedding(archive / "2025-06-14 Smith", seed=143)
+    out = tmp / "labels" / "decisions.jsonl"
+
+    code = main(["label", "--archive", str(archive), "--out", str(out),
+                 "--mode", "all", "--no-exiftool"])
+    check(code == 0, f"survey mode should exit 0, got {code}")
+    check((tmp / "labels" / "LABELLING-SURVEY.md").exists(),
+          "survey should be written next to the decision log")
+
+    # A name that matches nothing should fail with the list, not hang.
+    code = main(["label", "--archive", str(archive), "--out", str(out),
+                 "--wedding", "nonexistent", "--no-exiftool"])
+    check(code == 2, f"an unmatched --wedding should exit 2, got {code}")
+
+    code = main(["label", "--archive", str(tmp / "missing"), "--out", str(out)])
+    check(code == 2, "a missing archive should exit 2")
+
+    code = main(["label", "--out", str(out)])
+    check(code == 2, "neither --raw nor --archive should exit 2")
+
+
 # --- runner ---------------------------------------------------------------
 
 def run_all():
@@ -1373,6 +1440,7 @@ def run_all():
         test_bootstrap, test_bootstrap_cli, test_star_taxonomy,
         test_preview_extraction, test_label_task_building, test_decision_log,
         test_label_server_round_trip, test_label_summary_thresholds,
+        test_label_archive_discovery, test_label_cli_archive,
     ]
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)

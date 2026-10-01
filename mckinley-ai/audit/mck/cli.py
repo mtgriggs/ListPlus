@@ -23,7 +23,10 @@ from .catalog import (
     read_extract, render_catalog_report, write_extract,
 )
 from .cullwatch import run_intake, watch_intake
-from .labeler import DecisionLog, prepare, render_summary, serve
+from .labeler import (
+    DecisionLog, find_wedding_folders, prepare, render_summary,
+    render_survey_labelling, serve, survey_labelling,
+)
 from .editorial import (
     PROFILES, SubmissionLedger, evaluate, load_wedding_meta, meta_template,
     render_submission,
@@ -213,8 +216,58 @@ def cmd_diff(args) -> int:
 
 def cmd_label(args) -> int:
     raw_roots = _paths(args.raw)
+
+    # Archive mode: find the weddings by looking for raws, not by folder name.
+    if args.archive:
+        archive = Path(args.archive).expanduser()
+        if not archive.exists():
+            print(f"error: archive not found: {archive}", file=sys.stderr)
+            return 2
+        print(f"Looking for weddings under {archive} ...")
+        weddings = find_wedding_folders(archive)
+        if not weddings:
+            print("error: no folders containing raw files were found.", file=sys.stderr)
+            return 1
+        print(f"  {len(weddings)} wedding folder(s), "
+              f"{sum(w['raw_count'] for w in weddings):,} raw files")
+        print()
+
+        if args.wedding:
+            needle = args.wedding.lower()
+            matches = [w for w in weddings if needle in w["name"].lower()]
+            if not matches:
+                print(f"error: no wedding matching {args.wedding!r}. Found:", file=sys.stderr)
+                for w in weddings[:30]:
+                    print(f"  {w['name']}", file=sys.stderr)
+                return 2
+            if len(matches) > 1:
+                print(f"error: {args.wedding!r} matches {len(matches)} folders:",
+                      file=sys.stderr)
+                for w in matches[:10]:
+                    print(f"  {w['name']}", file=sys.stderr)
+                return 2
+            raw_roots = [Path(p) for p in matches[0]["raw_folders"]]
+            print(f"Selected: {matches[0]['name']}")
+        else:
+            survey = survey_labelling(
+                weddings, mode=args.mode, burst_gap=args.burst_gap,
+                prefer_exiftool=not args.no_exiftool,
+            )
+            text = render_survey_labelling(survey)
+            out_dir = Path(args.out).expanduser().parent
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "LABELLING-SURVEY.md").write_text(text, encoding="utf-8")
+            print()
+            print(text)
+            print()
+            print(f"Written to {out_dir / 'LABELLING-SURVEY.md'}")
+            print()
+            print("To label one wedding, add --wedding with part of its folder name.")
+            return 0
+
     if not raw_roots:
-        print("error: --raw is required", file=sys.stderr)
+        print("error: give --raw (a folder) or --archive (a drive), and with "
+              "--archive add --wedding to pick one.", file=sys.stderr)
         return 2
     missing = [p for p in raw_roots if not p.exists()]
     if missing:
@@ -515,8 +568,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     lb = sub.add_parser("label",
                         help="pick winners among near-duplicate bursts, in a browser")
-    lb.add_argument("--raw", action="append", required=True,
+    lb.add_argument("--raw", action="append",
                     help="folder of source frames (repeatable)")
+    lb.add_argument("--archive",
+                    help="drive holding every wedding. Without --wedding this "
+                         "surveys how much labelling work exists and stops.")
+    lb.add_argument("--wedding",
+                    help="part of a wedding folder name, to label just that one")
     lb.add_argument("--out", default="./labels/decisions.jsonl",
                     help="decision log, appended to and resumable")
     lb.add_argument("--mode", default="decisive", choices=["decisive", "all"],

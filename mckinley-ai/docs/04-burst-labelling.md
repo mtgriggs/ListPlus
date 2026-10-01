@@ -15,9 +15,39 @@ regenerated, and this regenerates it directly.
 
 ## Running it
 
+Every wedding lands on The Beast with a sidecar carrying its rating, so point at
+the drive and let it find them. Weddings are located by **containing raw files**,
+not by folder naming, so no `--raw-names` guessing is needed.
+
+First, see how much work there is. This labels nothing:
+
+```bash
+python3 -m mck label --archive "/Volumes/The Beast"
+```
+
+```
+| Metric | Value |
+| Weddings with raws | 3 |
+| Source frames | 1,253 |
+| Bursts to decide | 30 |
+| Preference pairs available | 135 |
+```
+
+Then label one:
+
+```bash
+python3 -m mck label --archive "/Volumes/The Beast" --wedding "Smith"
+```
+
+`--wedding` takes any part of the folder name. A single folder works too:
+
 ```bash
 python3 -m mck label --raw "/Volumes/The Beast/2025-06-14 Smith/RAW"
 ```
+
+If The Beast is not attached, the backup NAS works identically; `--archive` takes
+any path. Expect previews to load more slowly over the network, since each one
+pulls a few megabytes off the share. For a long sitting, prefer the drive.
 
 Then open http://127.0.0.1:8765/ and start picking.
 

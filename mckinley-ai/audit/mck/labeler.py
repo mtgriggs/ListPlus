@@ -37,6 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .exif import RAW_EXTS
 from .preview import extract_preview
 from .scan import ImageRecord, scan_wedding
 
@@ -119,6 +120,133 @@ def build_tasks(
             scene_id=members[0].scene_id,
         ))
     return tasks
+
+
+def find_wedding_folders(archive: Path, max_depth: int = 2) -> list[dict]:
+    """Immediate subfolders of the archive that contain raw files.
+
+    Deliberately ignores folder naming. Every other part of this toolkit has to
+    guess whether a folder is called RAW or Originals or CR3 Files; for
+    labelling the only question that matters is whether raws are in there, and
+    that can simply be checked.
+    """
+    found: list[dict] = []
+    if not archive.exists():
+        return found
+
+    def count_raws(root: Path, depth: int) -> tuple[int, list[Path]]:
+        total = 0
+        holders: list[Path] = []
+        if depth < 0:
+            return total, holders
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            return total, holders
+        here = sum(1 for e in entries
+                   if e.is_file() and e.suffix.lower() in RAW_EXTS
+                   and not e.name.startswith("."))
+        if here:
+            total += here
+            holders.append(root)
+        for entry in entries:
+            if entry.is_dir() and not entry.name.startswith("."):
+                sub_total, sub_holders = count_raws(entry, depth - 1)
+                total += sub_total
+                holders.extend(sub_holders)
+        return total, holders
+
+    try:
+        children = [c for c in sorted(archive.iterdir())
+                    if c.is_dir() and not c.name.startswith(".")]
+    except OSError:
+        return found
+
+    for child in children:
+        total, holders = count_raws(child, max_depth)
+        if total:
+            found.append({"name": child.name, "root": child,
+                          "raw_count": total, "raw_folders": holders})
+    return found
+
+
+def survey_labelling(
+    weddings: list[dict],
+    mode: str = "decisive",
+    burst_gap: float = 2.0,
+    prefer_exiftool: bool = True,
+    log=print,
+) -> dict:
+    """Count the decisions waiting across an archive, without labelling anything.
+
+    Answers the question that decides how much of a job this is, and how large
+    the eventual dataset can get, before committing an afternoon to it.
+    """
+    rows = []
+    for wedding in weddings:
+        try:
+            tasks, _ = prepare(
+                raw_roots=[Path(p) for p in wedding["raw_folders"]],
+                out_path=Path("/dev/null"),
+                mode=mode,
+                burst_gap=burst_gap,
+                prefer_exiftool=prefer_exiftool,
+            )
+        except Exception as exc:  # noqa: BLE001 - a bad wedding must not stop the survey
+            rows.append({"name": wedding["name"], "error": str(exc),
+                         "bursts": 0, "pairs": 0, "frames": wedding["raw_count"]})
+            log(f"  {wedding['name']}: failed ({exc})")
+            continue
+        pairs = sum(max(0, len(t.frames) - 1) for t in tasks)
+        rows.append({
+            "name": wedding["name"],
+            "frames": wedding["raw_count"],
+            "bursts": len(tasks),
+            "pairs": pairs,
+            "with_recorded_pick": sum(1 for t in tasks if t.original_winner),
+        })
+        log(f"  {wedding['name']}: {len(tasks):,} bursts, {pairs:,} pairs")
+
+    return {
+        "mode": mode,
+        "weddings": rows,
+        "total_weddings": len(rows),
+        "total_frames": sum(r["frames"] for r in rows),
+        "total_bursts": sum(r["bursts"] for r in rows),
+        "total_pairs": sum(r["pairs"] for r in rows),
+        "total_with_recorded_pick": sum(r.get("with_recorded_pick", 0) for r in rows),
+    }
+
+
+def render_survey_labelling(s: dict) -> str:
+    lines: list[str] = []
+    w = lines.append
+    w("# Labelling survey")
+    w("")
+    w(f"Mode: `{s['mode']}`")
+    w("")
+    w("| Metric | Value |")
+    w("| --- | --- |")
+    w(f"| Weddings with raws | {s['total_weddings']:,} |")
+    w(f"| Source frames | {s['total_frames']:,} |")
+    w(f"| Bursts to decide | {s['total_bursts']:,} |")
+    w(f"| With a recorded pick | {s['total_with_recorded_pick']:,} |")
+    w(f"| **Preference pairs available** | **{s['total_pairs']:,}** |")
+    w("")
+    if s["total_bursts"]:
+        hours = s["total_bursts"] / 250.0
+        w(f"At roughly 250 bursts an hour, labelling everything is about "
+          f"**{hours:.1f} hours**. You do not need all of it: one wedding gives the "
+          "self-consistency figure, and a handful gives a usable first dataset.")
+        w("")
+    w("| Wedding | Frames | Bursts | Pairs |")
+    w("| --- | --- | --- | --- |")
+    for r in sorted(s["weddings"], key=lambda r: -r["bursts"])[:40]:
+        if r.get("error"):
+            w(f"| {r['name']} | {r['frames']:,} | failed | {r['error'][:40]} |")
+        else:
+            w(f"| {r['name']} | {r['frames']:,} | {r['bursts']:,} | {r['pairs']:,} |")
+    return "\n".join(lines)
 
 
 # --- decision log ---------------------------------------------------------
