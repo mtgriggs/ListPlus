@@ -207,7 +207,6 @@ def survey_labelling(
             log(f"  {wedding['name']}: failed ({exc})")
             continue
         pairs = sum(max(0, len(t.frames) - 1) for t in tasks)
-        log(f"  [{n}/{total}] ", end="") if False else None
         rows.append({
             "name": wedding["name"],
             "frames": wedding["raw_count"],
