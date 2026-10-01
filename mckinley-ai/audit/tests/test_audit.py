@@ -1399,6 +1399,45 @@ def test_label_archive_discovery(tmp: Path):
 
     check(find_wedding_folders(tmp / "nope") == [], "a missing archive yields nothing")
 
+    # Weddings nested under a container must be reachable, and a depth that is
+    # too shallow must make the container vanish rather than look empty.
+    deep = tmp / "Beast2"
+    buried = deep / "Weddings" / "2024" / "Patterson" / "RAW"
+    buried.mkdir(parents=True)
+    for n in range(3):
+        (buried / f"IMG_{n}.CR2").write_bytes(b"x")
+
+    shallow = find_wedding_folders(deep, max_depth=1)
+    check(shallow == [], "too shallow a scan should find nothing, not an empty container")
+    deeper = find_wedding_folders(deep, max_depth=4)
+    check(len(deeper) == 1 and deeper[0]["raw_count"] == 3,
+          f"a deeper scan should reach the buried raws, got {deeper}")
+
+
+def test_survey_samples_the_largest(tmp: Path):
+    """Sampling must follow frame counts, not alphabetical order."""
+    from mck.labeler import render_survey_labelling, survey_labelling
+
+    archive = tmp / "Beast"
+    make_wedding(archive / "zzz Big Wedding", seed=151)
+    for name in ("aaa Tiny", "bbb Tiny", "ccc Tiny"):
+        folder = archive / name / "RAW"
+        folder.mkdir(parents=True)
+        (folder / "IMG_1.CR2").write_bytes(b"x")
+
+    from mck.labeler import find_wedding_folders
+    found = find_wedding_folders(archive)
+    survey = survey_labelling(found, mode="all", prefer_exiftool=False, limit=1,
+                              log=lambda *_: None)
+    check(survey["surveyed"] == 1, "one wedding should be counted")
+    check(survey["weddings"][0]["name"] == "zzz Big Wedding",
+          f"the largest should be sampled, got {survey['weddings'][0]['name']}")
+    check(len(survey["not_counted"]) == 3, "the rest should be named, not just counted")
+
+    text = render_survey_labelling(survey)
+    check("Not counted:" in text, "the report should name what it skipped")
+    check("aaa Tiny" in text, "including the folder names")
+
 
 def test_label_cli_archive(tmp: Path):
     from mck.cli import main
@@ -1510,7 +1549,8 @@ def run_all():
         test_bootstrap, test_bootstrap_cli, test_star_taxonomy,
         test_preview_extraction, test_label_task_building, test_decision_log,
         test_label_server_round_trip, test_label_summary_thresholds,
-        test_label_archive_discovery, test_label_cli_archive,
+        test_label_archive_discovery, test_survey_samples_the_largest,
+        test_label_cli_archive,
         test_recommend_first_sitting,
     ]
     with tempfile.TemporaryDirectory() as td:

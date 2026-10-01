@@ -224,7 +224,7 @@ def cmd_label(args) -> int:
             print(f"error: archive not found: {archive}", file=sys.stderr)
             return 2
         print(f"Looking for weddings under {archive} ...")
-        weddings = find_wedding_folders(archive)
+        weddings = find_wedding_folders(archive, max_depth=args.depth)
         if not weddings:
             print("error: no folders containing raw files were found.", file=sys.stderr)
             return 1
@@ -593,7 +593,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="preferred preview size in pixels")
     lb.add_argument("--limit", type=int, help="only scan the first N frames")
     lb.add_argument("--limit-weddings", type=int,
-                    help="survey only the first N weddings, and extrapolate")
+                    help="survey only the N largest weddings, and extrapolate")
+    lb.add_argument("--depth", type=int, default=4,
+                    help="how many folder levels below each top-level folder to "
+                         "search for raws (default 4). Raise it if weddings are "
+                         "nested under a container folder.")
     lb.add_argument("--summary", action="store_true",
                     help="print results so far and exit, without serving")
     lb.add_argument("--no-exiftool", action="store_true")

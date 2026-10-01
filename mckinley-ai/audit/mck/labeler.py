@@ -122,13 +122,21 @@ def build_tasks(
     return tasks
 
 
-def find_wedding_folders(archive: Path, max_depth: int = 2) -> list[dict]:
+def find_wedding_folders(archive: Path, max_depth: int = 4) -> list[dict]:
     """Immediate subfolders of the archive that contain raw files.
 
     Deliberately ignores folder naming. Every other part of this toolkit has to
     guess whether a folder is called RAW or Originals or CR3 Files; for
     labelling the only question that matters is whether raws are in there, and
     that can simply be checked.
+
+    ``max_depth`` matters more than it looks. An archive often nests weddings
+    under a container (``Weddings/2024/Patterson/RAW``), and a scan that stops
+    short reports the categories sitting at the top of the drive while missing
+    everything underneath them. Folders holding no raws within the depth limit
+    are omitted entirely, so a container whose contents are out of reach
+    vanishes rather than showing up empty — which is exactly the failure that
+    makes a wrong depth look like a correct answer.
     """
     found: list[dict] = []
     if not archive.exists():
@@ -184,7 +192,12 @@ def survey_labelling(
     the eventual dataset can get, before committing an afternoon to it.
     """
     rows = []
-    selected = weddings[:limit] if limit else weddings
+    # Sample the largest folders rather than the first alphabetically: the
+    # weddings are where the frames are, and alphabetical order has no
+    # relationship to that.
+    ordered = sorted(weddings, key=lambda w: -w["raw_count"])
+    selected = ordered[:limit] if limit else weddings
+    skipped_names = [w["name"] for w in ordered[limit:]] if limit else []
     total = len(selected)
     sampled = len(selected) < len(weddings)
 
@@ -224,6 +237,7 @@ def survey_labelling(
         "sampled": sampled or len(rows) < total,
         "surveyed": len(rows),
         "available": len(weddings),
+        "not_counted": skipped_names,
         "weddings": rows,
         "total_weddings": len(rows),
         "total_frames": sum(r["frames"] for r in rows),
@@ -317,6 +331,9 @@ def render_survey_labelling(s: dict) -> str:
     w(f"| With a recorded pick | {s['total_with_recorded_pick']:,} |")
     w(f"| **Preference pairs available** | **{s['total_pairs']:,}** |")
     w("")
+    if s.get("not_counted"):
+        w(f"Not counted: {', '.join(s['not_counted'][:20])}")
+        w("")
     if s.get("sampled"):
         w(f"> Counted {s['surveyed']} of {s['available']} weddings. "
           f"Scaling by {s['available'] / max(1, s['surveyed']):.1f}x suggests roughly "
